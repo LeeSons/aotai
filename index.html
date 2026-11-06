@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>鳌太 · 九死一生</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<!-- 屏幕效果层 -->
+<div id="fx-vignette"></div>
+<div id="fx-frost"></div>
+<div id="fx-blood"></div>
+<div id="fx-drops"></div>
+<div id="fx-flash"></div>
+<div id="fx-black"></div>
+
+<!-- ============ HUD ============ -->
+<div id="hud" class="hidden">
+  <div id="hud-tl">
+    <div id="hud-time"></div>
+    <div id="hud-wx"></div>
+    <div id="hud-alt"></div>
+    <div id="hud-next"></div>
+  </div>
+  <div id="hud-top">
+    <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
+    <div id="progress"></div>
+  </div>
+  <div id="hud-tr"><canvas id="minimap" width="220" height="220"></canvas><div id="minimap-note"></div></div>
+  <div id="msgs"></div>
+  <div id="hud-bl">
+    <div id="chips"></div>
+    <div id="bars"></div>
+  </div>
+  <div id="hud-br">
+    <div id="load"></div>
+    <div id="keys">
+      <span><b>Shift</b>快跑</span><span><b>C</b>蹲行</span><span><b>Z</b>匍匐</span><span><b>X</b>登山杖</span><span><b>J</b>跳动取暖</span><span><b>B</b>背包</span><span><b>M</b>地图</span><span><b>T</b>扎营</span><span><b>R</b>休息</span><span><b>E</b>互动</span><span><b>1</b>喝水</span><span><b>2</b>吃</span><span><b>F</b>头灯</span><span><b>V</b>视角</span><span><b>H</b>帮助</span>
+    </div>
+  </div>
+  <div id="prompt"></div>
+  <div id="alert"></div>
+  <div id="qte"><div id="qte-text"></div><div id="qte-bar"><div id="qte-fill"></div></div></div>
+  <div id="titlecard"><div class="tc-sub"></div><div class="tc-name"></div><div class="tc-alt"></div><div class="tc-desc"></div></div>
+  <div id="wpmark"><div class="wp-ico">◆</div><div class="wp-name"></div><div class="wp-dist"></div><div class="wp-arrow">➤</div></div>
+  <div id="crosshair"></div>
+  <div id="lockhint">点击画面以控制视角</div>
+</div>
+
+<!-- ============ 标题 ============ -->
+<div id="screen-title" class="screen">
+  <div class="title-wrap">
+    <div class="title-sub">秦岭 · 鳌山 — 太白山</div>
+    <h1 class="title-main">鳌太</h1>
+    <div class="title-tag">九 死 一 生</div>
+    <div class="title-en">THE AOTAI TRAVERSE</div>
+    <div class="title-btns">
+      <button class="btn big" id="btn-start">开始穿越</button>
+      <button class="btn" id="btn-continue" style="display:none">从存档继续</button>
+      <button class="btn" id="btn-help">操作说明</button>
+      <button class="btn" id="btn-about">关于鳌太线</button>
+    </div>
+    <div class="title-warn">鳌太线自 2018 年起已被明令禁止穿越。本游戏为虚构体验，请勿模仿。</div>
+  </div>
+</div>
+
+<!-- ============ 难度 ============ -->
+<div id="screen-diff" class="screen hidden">
+  <div class="panel diff-panel">
+    <h2>选择你的身份</h2>
+    <div id="diff-list"></div>
+    <div class="row-btns"><button class="btn ghost" data-back="title">返回</button></div>
+  </div>
+</div>
+
+<!-- ============ 季节 ============ -->
+<div id="screen-season" class="screen hidden">
+  <div class="panel season-panel">
+    <h2>选择穿越季节</h2>
+    <div class="muted" style="margin-bottom:6px">不同季节的气温、天气、积雪、水源、白昼长短和动植物都完全不同。</div>
+    <div id="season-money" style="margin-bottom:14px"></div>
+    <div id="season-list"></div>
+    <div class="row-btns"><button class="btn ghost" data-back="title">返回</button></div>
+  </div>
+</div>
+
+<!-- ============ 商店 ============ -->
+<div id="screen-shop" class="screen hidden">
+  <div class="shop">
+    <div class="shop-head">
+      <div>
+        <h2>塘口村 · 户外用品店</h2>
+        <div class="muted">出发前的最后一次补给。背包至少选一个；物资总重不能超过背包承重（水 1 升 = 1 公斤，出发时会把水壶灌满）。</div>
+      </div>
+      <div class="shop-money">资金 <b id="shop-money"></b></div>
+    </div>
+    <div class="shop-body">
+      <div class="shop-cats" id="shop-cats"></div>
+      <div class="shop-items" id="shop-items"></div>
+      <div class="shop-side">
+        <div class="side-block">
+          <div class="side-title">负重</div>
+          <div class="wbar"><div id="shop-wfill"></div></div>
+          <div id="shop-wtext" class="muted"></div>
+        </div>
+        <div class="side-block">
+          <div class="side-title">补给估算</div>
+          <div id="shop-est" class="muted"></div>
+        </div>
+        <div class="side-block grow">
+          <div class="side-title">清单</div>
+          <div id="shop-list"></div>
+        </div>
+        <div class="side-block">
+          <div id="shop-warn"></div>
+        </div>
+        <div class="side-btns">
+          <button class="btn ghost" id="shop-rec">一键推荐</button>
+          <button class="btn ghost" id="shop-clear">清空</button>
+          <button class="btn big" id="shop-go">出发</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 通用弹窗 ============ -->
+<div id="modal" class="screen hidden">
+  <div class="panel modal-panel">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <div id="modal-btns" class="row-btns"></div>
+  </div>
+</div>
+
+<!-- ============ 背包 ============ -->
+<div id="screen-inv" class="screen hidden">
+  <div class="panel inv-panel">
+    <div class="inv-head"><h2>背包</h2><div class="muted">时间暂停中 · 按 B 或 Esc 关闭</div></div>
+    <div class="inv-body">
+      <div class="inv-stats" id="inv-stats"></div>
+      <div class="inv-items" id="inv-items"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 地图 ============ -->
+<div id="screen-map" class="screen hidden">
+  <div class="panel map-panel">
+    <div class="inv-head"><h2>路线图</h2><div class="muted" id="map-note"></div></div>
+    <canvas id="bigmap" width="1100" height="420"></canvas>
+    <canvas id="profile" width="1100" height="170"></canvas>
+  </div>
+</div>
+
+<!-- ============ 结局 ============ -->
+<div id="screen-end" class="screen hidden">
+  <div class="end-wrap">
+    <div id="end-kicker"></div>
+    <h1 id="end-title"></h1>
+    <div id="end-cause"></div>
+    <div id="end-stats"></div>
+    <div id="end-text"></div>
+    <div class="row-btns" id="end-btns"></div>
+  </div>
+</div>
+
+<div id="loading" class="screen hidden"><div class="load-wrap"><div class="load-title">正在进山……</div><div class="load-bar"><div id="load-fill"></div></div><div id="load-tip" class="muted"></div></div></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
