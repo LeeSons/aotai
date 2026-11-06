@@ -85,7 +85,7 @@ export class UI {
       <div>M</div><div>查看全线地图与海拔剖面（需要纸质地图或导航设备）</div>
       <div>E</div><div>互动：取水、查看路牌、进庙避风、与驴友交谈、购买补给；野外下雨、有积雪或雨后有水洼时，按 E 就地取水（接雨水 / 融雪 / 舀积水）</div>
       <div>T</div><div>扎营：搭帐篷睡觉 / 露宿 / 休息一小时</div>
-      <div>R</div><div>原地坐下休息（快速恢复体力）</div>
+      <div>R</div><div>原地坐下休息（快速恢复体力，慢慢回一点精力和生命）</div>
       <div>1 / 2 / 3</div><div>快速喝水 / 吃零食 / 用急救包</div>
       <div>F</div><div>开关头灯</div>
       <div>G</div><div>开关小地图（需要 GPS 或手机离线轨迹）</div>
@@ -93,7 +93,8 @@ export class UI {
       <div>Esc</div><div>暂停</div>
       <div>F9</div><div>（测试用）传送到下一个地标</div>
     </div>
-    <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时跟着红布条路标走；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>`;
+    <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时跟着红布条路标走；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>
+    <p class="muted">身体：吃饱后能走大半天才会饿，断粮会越来越虚但不会马上倒下；空肚子喝点水能稍微压一压饿。冷天水壶里的水接近冰点，猛灌会拉低核心体温——有炉子就烧热水喝。坐下休息能回一点精力；真正恢复要靠睡觉。生命在没有伤病、不太饿不太渴、身体不冷时会自己慢慢恢复：走路时约 +1/小时，坐下休息约 +2.5/小时，睡一觉约 +4/小时，吃饱喝足或刚吃过热食更快；急救包能处理擦伤（+15）。</p>`;
   }
 
   // ---------------- 难度 ----------------
@@ -526,7 +527,7 @@ export class UI {
     const th = s.thermal(g.envNow || {});
     const row = (a, b) => `<div class="st"><span>${a}</span><span>${b}</span></div>`;
     let html = `<h4>身体状况</h4>`;
-    html += row('生命', Math.round(s.health) + ' / 100');
+    html += row('生命', Math.round(s.health) + ' / 100' + (s.health >= 99.5 ? '' : s.regen > 0 ? ` <span style="color:#7fc77a">恢复中 +${fmt(s.regen, 1)}/小时</span>` : s.noRegen ? ` <span style="color:#e8913a">不恢复（${s.noRegen}）</span>` : ''));
     html += row('体力', `${Math.round(s.stamina)}（上限 ${Math.round(s.maxStamina())}）`);
     html += row('精力 / 疲劳', Math.round(s.energy) + ' / 100');
     html += row('饱食度', `${Math.round(s.satiety)}（约 ${Math.round(s.satiety * 20)} kcal 储备）`);

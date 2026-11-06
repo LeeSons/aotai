@@ -893,6 +893,7 @@ class Game {
     if (s.status.fracture && !s.status.fracture.splinted) this.tip('fracture', '骨折了！用急救包固定（按 3）。如果有卫星通讯器，考虑发送 SOS。');
     if (env.mud > 0.5 && this.player.moving) this.tip('mud', '雨后的土路变成了烂泥，每一步都陷脚、打滑，体力消耗明显变大。展开登山杖(X)，慢慢走。');
     if (s.wet > 60 && this.airTemp < 10) this.tip('wet', '你浑身湿透了。湿衣服会急剧加速失温——尽快找避风处，或扎营钻进睡袋。');
+    if (s.health < 70) this.tip('heal', '生命不会一下子补满：只要没在流血 / 中毒、不太饿不太渴、身体不冷，它会自己慢慢恢复——走路时很慢，按 R 坐下休息快一些，扎营睡一觉恢复最多，吃热食更快。急救包能处理擦伤（+15）。');
   }
 
   updatePrompt() {
@@ -964,13 +965,23 @@ class Game {
     inv.water -= a; inv.waterRaw = Math.max(0, inv.waterRaw - raw);
     s.hydration = Math.min(100, s.hydration + a / 0.025);
     s.stats.water += a;
-    if (s.core < 36) s.core -= a * 0.25;
+    const tw = this.bottleTemp();
+    const chill = s.coldDrink(a, tw);
+    const fill = s.drinkFill(a);
     this.audio.drink();
     if (raw > 0.05 && !s.status.diarrhea && Math.random() < raw * 0.45 * this.diff.hazard) {
       setTimeout(() => { if (this.state === 'play') { s.addStatus('diarrhea', { t: 150 }); this.msg('肚子一阵绞痛……喝下去的生水不干净，你开始急性腹泻！', 'crit'); } }, 6000);
     }
-    this.msg(`你喝了 ${fmt(a, 2)} L 水。剩余 ${fmt(inv.water, 2)} L。`, 'info');
+    const left = `你喝了 ${fmt(a, 2)} L 水。剩余 ${fmt(inv.water, 2)} L。`;
+    if (tw < 8 && chill >= 0.08) {
+      const cold = s.core < 35.5;
+      this.msg(`${left}水冰得扎牙，灌下去浑身一激灵（核心体温 −${fmt(chill, 1)}℃）。${cold ? '你本来就在失温，这口冰水让你抖得更厉害了！' : ''}`, cold ? 'danger' : 'warn');
+      this.tip('coldwater', inv.has('stove') ? '天冷时水壶里的水接近冰点，直接喝会拉低核心体温。有炉子就在背包里选「喝热水暖身」，或者小口慢慢喝。' : '天冷时水壶里的水接近冰点，直接喝会拉低核心体温。小口慢慢喝，别在身体发冷时猛灌。');
+    } else this.msg(left + (fill > 0.5 ? '空肚子灌点水，饿得没那么慌了。' : ''), 'info');
   }
+
+  // 水壶里的水：背包里比气温稍暖，但冷天仍接近冰点
+  bottleTemp() { return clamp((this.airTemp ?? 10) + 4, 0.5, 30); }
 
   quickEat() {
     const order = ['bar', 'choco', 'jerky', 'biscuit', 'meal', 'noodle'];
@@ -1037,6 +1048,7 @@ class Game {
     if (inv.water < 0.3 || !inv.useGas()) return;
     inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
     s.hydration = Math.min(100, s.hydration + 12); s.core = Math.min(37.3, s.core + 0.6); s.mental = Math.min(100, s.mental + 6);
+    s.drinkFill(0.3);
     s.addStatus('hotmeal', { t: SEC_PER_GAME_HOUR });
     this.gameMin += 10; this.audio.drink();
     this.msg('你捧着一杯热水慢慢喝下，冻僵的手指渐渐有了知觉。', 'good');
@@ -1097,7 +1109,12 @@ class Game {
   }
 
   // 没有水壶时，接到的水只能当场喝掉
-  drinkDirect(L) { const s = this.surv; s.hydration = Math.min(100, s.hydration + L / 0.025); s.stats.water += L; }
+  // tw：水温（直接趴在水边喝冰冷的水会降体温）；接雨水是一小时里慢慢喝的，不额外算
+  drinkDirect(L, tw) {
+    const s = this.surv; s.hydration = Math.min(100, s.hydration + L / 0.025); s.stats.water += L;
+    s.drinkFill(L);
+    if (tw !== undefined) s.coldDrink(L, tw);
+  }
 
   collectRain(hours, c) {
     const inv = this.inv;
@@ -1139,7 +1156,7 @@ class Game {
     const inv = this.inv, s = this.surv;
     this.gameMin += 10;
     if (inv.waterCap <= 0) {
-      this.drinkDirect(0.3); this.audio.drink();
+      this.drinkDirect(0.3, clamp(this.airTemp, 0.5, 20)); this.audio.drink();
       if (Math.random() < 0.5 * this.diff.hazard) setTimeout(() => { if (this.state === 'play') { s.addStatus('diarrhea', { t: 150 }); this.msg('水洼里的脏水让你开始腹泻！', 'crit'); } }, 6000);
       this.msg('你趴在水洼边喝了几口浑水。', 'warn'); return;
     }
@@ -1249,8 +1266,9 @@ class Game {
         }
         if (it.dry) { this.msg('水坑早已干涸，只剩一滩龟裂的泥。', 'danger'); s.mental -= 5; return; }
         const add = inv.waterCap - inv.water;
-        if (inv.waterCap <= 0) { this.msg('你没有任何水壶……只能用手捧着喝几口。', 'warn'); s.hydration = Math.min(100, s.hydration + 10); inv.waterRaw = 0; if (Math.random() < 0.35 * this.diff.hazard) s.addStatus('diarrhea', { t: 150 }); return; }
-        s.hydration = Math.min(100, s.hydration + 12);
+        const springT = clamp(this.airTemp, 2, 10);   // 山泉水常年冰凉
+        if (inv.waterCap <= 0) { this.msg('你没有任何水壶……只能用手捧着喝几口。', 'warn'); this.drinkDirect(0.25, springT); if (Math.random() < 0.35 * this.diff.hazard) s.addStatus('diarrhea', { t: 150 }); return; }
+        this.drinkDirect(0.3, springT);
         if (add < 0.05) { this.msg('水壶已经是满的。你在水源边痛快地喝了几口。', 'info'); if (Math.random() < 0.15 * this.diff.hazard) s.addStatus('diarrhea', { t: 150 }); return; }
         inv.water = inv.waterCap;
         if (inv.has('tablet') && inv.use('tablet')) { this.msg(`你灌满了 ${fmt(add, 1)} L 水，并投入了净水片。`, 'good'); }

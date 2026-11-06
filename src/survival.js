@@ -3,6 +3,7 @@ import { ITEMS, ITEM_USES, SEC_PER_GAME_HOUR } from './data.js';
 import { clamp, lerp } from './noise.js';
 
 const PER_H = 1 / SEC_PER_GAME_HOUR; // 每游戏小时 → 每现实秒
+const FOOD_SHARE = 0.5;               // 消耗里由胃里的食物承担的比例（其余靠身体脂肪）
 
 // ---------------- 背包 ----------------
 export class Inventory {
@@ -91,7 +92,7 @@ export class Survival {
     this.stats = { minCore: 37, maxAlt: 0, kcal: 0, water: 0, dangers: 0, falls: 0 };
   }
   serialize() {
-    const o = {}; for (const k of ['health', 'stamina', 'energy', 'satiety', 'hydration', 'core', 'wet', 'mental', 'altSick', 'acclim', 'paradoxDone', 'coma']) o[k] = this[k];
+    const o = {}; for (const k of ['health', 'stamina', 'energy', 'satiety', 'hydration', 'core', 'wet', 'mental', 'altSick', 'acclim', 'paradoxDone', 'coma', 'waterSat']) o[k] = this[k];
     o.status = JSON.parse(JSON.stringify(this.status)); o.stats = { ...this.stats }; return o;
   }
   restore(s) { Object.assign(this, s); this.status = JSON.parse(JSON.stringify(s.status)); this.stats = { ...s.stats }; this.cause = ''; }
@@ -208,11 +209,14 @@ export class Survival {
     }
 
     // ---- 饥饿 ----
+    // kcal 是实际消耗；饱食度只反映胃里和血糖那一部分。徒步时身体会动用脂肪储备补上大约一半的缺口，
+    // 所以人没那么容易饿：吃饱后要连续走大半天才会饿；断粮也不会马上要命，只是越来越虚、越来越怕冷。
     let kcal = env.sleeping ? 55 : act === 0 ? 70 : act >= 2 ? 280 : act > 1 ? 220 : 160;
     kcal *= 0.75 + lf * 0.25;
     if (this.core < 36) kcal += 90;
-    this.satiety = Math.max(0, this.satiety - kcal / 20 * PER_H * dt);
+    this.satiety = Math.max(0, this.satiety - kcal * FOOD_SHARE / 20 * PER_H * dt);
     this.stats.kcal += kcal * PER_H * dt;
+    this.waterSat = Math.max(0, (this.waterSat || 0) - 2 * PER_H * dt);
 
     // ---- 口渴 ----
     // 升/游戏小时。山上气温低，稳步徒步每小时只需 0.12–0.16 L：喝足水后连续爬坡半天不喝会很渴，但远不致命；
@@ -226,12 +230,15 @@ export class Survival {
     this.hydration = Math.max(0, this.hydration - L / 0.025 * PER_H * dt);
 
     // ---- 精力 ----
+    // 一整天的徒步会把精力耗掉一大半，睡一觉才能补回来；坐下歇着能慢慢回一点（远不如睡觉）
     if (env.sleeping) {
       this.energy = Math.min(100, this.energy + 11 * (env.sleepQ || 1) * PER_H * dt);
+    } else if (env.resting) {
+      this.energy = Math.min(100, this.energy + (this.satiety > 8 ? 3 : 1.2) * PER_H * dt);
     } else {
-      let e = act === 0 ? 2.5 : act >= 2 ? 8 : act > 1 ? 6 : 4.5;
+      let e = act === 0 ? 1.5 : act >= 2 ? 7 : act > 1 ? 4.2 : 3.2;
       if (st.elec) e *= 0.8;
-      if (env.resting) e = 1.2;
+      if (this.satiety <= 0) e *= 1.3;
       this.energy = Math.max(0, this.energy - e * PER_H * dt);
     }
 
@@ -310,7 +317,7 @@ export class Survival {
     const add = (v, c) => { dh -= v; causes.push([v, c]); };
     if (st.bleed) add(0.22, '失血过多');
     if (st.poison) add(0.15, '蛇毒');
-    if (this.satiety <= 0) add(0.06, '饥饿与低血糖');
+    if (this.satiety <= 0) add(0.02, '饥饿与低血糖');
     if (this.hydration <= 0) add(0.15, '严重脱水');
     if (this.core < 32) add((32 - this.core) * 0.09 + 0.05, '失温');
     if (!this.coma && !env.sleeping && (this.core < 30.3 || (this.core < 31.4 && Math.random() < dt * 0.07))) { this.coma = true; hooks.coma && hooks.coma(); }
@@ -323,8 +330,19 @@ export class Survival {
     if (this.mental <= 0) add(0.05, '精神崩溃');
     if (this.energy <= 0) add(0.03, '极度疲劳衰竭');
     if (env.hail > 0.3 && !env.inTent && !env.shelter) add(0.06, '冰雹砸伤');
-    if (dh === 0 && this.satiety > 25 && this.hydration > 25 && this.core > 35.5) {
-      dh = (env.sleeping ? 0.12 : 0.025);
+    // 生命自然恢复：没有伤病在掉血、不太饿不太渴、身体不冷时，生命会慢慢长回来。
+    // 走路时很慢，坐下休息快一些，睡一觉恢复最多；吃饱喝足、刚吃过热食恢复更快。
+    this.regen = 0; this.noRegen = '';
+    if (dh !== 0) this.noRegen = causes.sort((a, b) => b[0] - a[0])[0][1];
+    else if (this.satiety <= 15) this.noRegen = '太饿';
+    else if (this.hydration <= 15) this.noRegen = '太渴';
+    else if (this.core <= 35.5) this.noRegen = '太冷';
+    else {
+      let r = env.sleeping ? 4 * clamp(env.sleepQ || 1, 0.3, 1.2) : env.resting ? 2.5 : 1;   // 每游戏小时
+      if (this.satiety > 50 && this.hydration > 50) r *= 1.25;
+      if (st.hotmeal) r *= 1.5;
+      this.regen = r;
+      dh = r * PER_H;
     }
     this.health = clamp(this.health + dh * dt, 0, 100);
     if (this.core <= 27) { this.health = 0; this.cause = '失温'; }
@@ -343,9 +361,26 @@ export class Survival {
     if (this.core > 34) this.paradoxDone = false;
   }
 
+  // 喝水能暂时压一压饥饿感（“水饱”），但只能顶一点点：0.25 L ≈ 2.5 点饱食度，
+  // 最多垫到 45，而且一小时里通过喝水补的饱食度总共也就两三点——不能拿水当饭吃。
+  drinkFill(L) {
+    const g = Math.min(L * 10, 6 - (this.waterSat || 0), 45 - this.satiety);
+    if (!(g > 0)) return 0;
+    this.satiety += g; this.waterSat = (this.waterSat || 0) + g;
+    return g;
+  }
+
+  // 喝下低温的水，身体要花热量把它焐到体温：0.25 L 接近 0℃ 的水 ≈ 核心体温 −0.25℃。
+  // 天暖时这点热量很快就补回来；冷天、尤其已经在失温的时候，一大口冰水会把人往下拽。
+  coldDrink(L, tw) {
+    const d = L * Math.max(0, 36 - tw) * 0.028 * (this.core < 36 ? 1.4 : 1);
+    this.core -= d;
+    return d;
+  }
+
   maxStamina() {
     let m = 100 * clamp(0.35 + 0.65 * this.energy / 100, 0.35, 1);
-    if (this.satiety < 8) m *= 0.6;
+    if (this.satiety < 8) m *= 0.7;
     if (this.hydration < 10) m *= 0.7;
     if (this.core < 35) m *= 0.7;
     if (this.altSick > 35) m *= this.status.ibu ? 0.92 : 0.82;
