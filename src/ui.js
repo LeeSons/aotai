@@ -83,7 +83,7 @@ export class UI {
       <div>V</div><div>切换 第一人称 / 第三人称</div>
       <div>B</div><div>打开背包：吃喝、穿脱衣物、用药、烧水、求救（时间暂停）</div>
       <div>M</div><div>查看全线地图与海拔剖面（需要纸质地图或导航设备）</div>
-      <div>E</div><div>互动：取水、查看路牌、进庙避风、与驴友交谈、购买补给</div>
+      <div>E</div><div>互动：取水、查看路牌、进庙避风、与驴友交谈、购买补给；野外下雨、有积雪或雨后有水洼时，按 E 就地取水（接雨水 / 融雪 / 舀积水）</div>
       <div>T</div><div>扎营：搭帐篷睡觉 / 露宿 / 休息一小时</div>
       <div>R</div><div>原地坐下休息（快速恢复体力）</div>
       <div>1 / 2 / 3</div><div>快速喝水 / 吃零食 / 用急救包</div>
@@ -581,6 +581,7 @@ export class UI {
       if (inv.has('stove')) add('烧开生水', () => g.boilWater(), inv.waterRaw < 0.01 || inv.gasLeft() <= 0);
       if (inv.has('stove')) add('喝热水暖身', () => g.hotDrink(), inv.water < 0.3 || inv.gasLeft() <= 0);
       if (inv.has('stove') && (g.snowLocal || 0) > 0.25) add('融雪取水', () => g.meltSnow(), inv.gasLeft() <= 0 || inv.water >= inv.waterCap);
+      if (g.fieldWater().any) add('就地取水…', () => { this.hide('screen-inv'); g.fieldWaterMenu(); }, inv.water >= inv.waterCap - 0.05);
       c.appendChild(ctl); box.appendChild(c);
     }
     const ids = Object.keys(inv.items);

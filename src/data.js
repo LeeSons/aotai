@@ -142,8 +142,8 @@ export const BACKPACKS = [
 // stack: 可叠加数量购买；max：最大数量
 export const ITEMS = {
   // ---- 宿营 ----
-  tent3:  { name: '三季帐篷', cat: 'shelter', price: 499, weight: 1.8, desc: '单人双层帐。抗风一般，8 级以上大风可能被撕裂。' },
-  tent4:  { name: '四季高山帐', cat: 'shelter', price: 1199, weight: 2.5, desc: '高山级防风帐，可抵御 10 级风雪。' },
+  tent3:  { name: '三季帐篷', cat: 'shelter', price: 499, weight: 1.8, desc: '单人双层帐。抗风一般，8 级以上大风可能被撕裂。下雨时撑开外帐能接雨水，人还能躲在里面。' },
+  tent4:  { name: '四季高山帐', cat: 'shelter', price: 1199, weight: 2.5, desc: '高山级防风帐，可抵御 10 级风雪。下雨时撑开外帐能接雨水，人还能躲在里面。' },
   bag10:  { name: '信封睡袋(舒适+10℃)', cat: 'shelter', price: 149, weight: 1.0, bag: 10, desc: '便宜，但在鳌太的夜里基本等于一张被单。' },
   bag0:   { name: '羽绒睡袋(舒适0℃)', cat: 'shelter', price: 599, weight: 1.1, bag: 0, desc: '三季羽绒睡袋，夏秋季的主流选择。' },
   bagm10: { name: '高山羽绒睡袋(舒适-10℃)', cat: 'shelter', price: 1099, weight: 1.5, bag: -10, desc: '暴雪之夜也能睡个好觉。' },
@@ -153,7 +153,7 @@ export const ITEMS = {
   fleece: { name: '抓绒衣', cat: 'cloth', price: 199, weight: 0.5, wear: true, insul: 6, desc: '中间保暖层，湿了也有一定保暖性。' },
   down:   { name: '羽绒服', cat: 'cloth', price: 699, weight: 0.7, wear: true, insul: 12, wetLoss: 0.85, desc: '保暖之王，但一旦被淋湿几乎失去保暖能力。' },
   shell:  { name: '冲锋衣裤(硬壳)', cat: 'cloth', price: 899, weight: 1.0, wear: true, insul: 3, windBlock: 0.7, rainBlock: 0.9, desc: '防风防水。鳌太线上最重要的一件装备。' },
-  poncho: { name: '一次性雨衣', cat: 'cloth', price: 15, weight: 0.2, wear: true, insul: 0, windBlock: 0.1, rainBlock: 0.55, fragile: true, desc: '聊胜于无，大风中很快就会被撕烂。' },
+  poncho: { name: '一次性雨衣', cat: 'cloth', price: 15, weight: 0.2, wear: true, insul: 0, windBlock: 0.1, rainBlock: 0.55, fragile: true, desc: '聊胜于无，大风中很快就会被撕烂。下雨时还能铺开来兜雨水。' },
   hat:    { name: '抓绒帽+手套', cat: 'cloth', price: 99, weight: 0.2, wear: true, insul: 3, desc: '头部和手部散热占了很大比例。' },
   boots:  { name: '高帮登山鞋', cat: 'cloth', price: 699, weight: 1.2, desc: '护踝防滑，大幅降低在石海崴脚的概率。没有它你穿的是运动鞋。' },
   gaiter: { name: '雪套绑腿', cat: 'cloth', price: 69, weight: 0.2, desc: '防止蜱虫、蛇咬和雨水灌进鞋里。' },
@@ -171,7 +171,7 @@ export const ITEMS = {
   glasses:{ name: '太阳镜', cat: 'gear', price: 149, weight: 0.05, desc: '雪后晴天防止雪盲。' },
   spray:  { name: '防兽喷雾', cat: 'gear', price: 199, weight: 0.3, stack: true, max: 3, desc: '按 Q 喷射，驱赶冲过来的羚牛。每罐可用一次。' },
   // ---- 炊具饮水 ----
-  bottle: { name: '水壶(1L)', cat: 'cook', price: 29, weight: 0.15, stack: true, max: 8, desc: '每个增加 1L 携水量。水本身也很重：1 升 = 1 公斤。' },
+  bottle: { name: '水壶(1L)', cat: 'cook', price: 29, weight: 0.15, stack: true, max: 8, desc: '每个增加 1L 携水量。水本身也很重：1 升 = 1 公斤。路上可以在水源灌水，下雨时接雨水，有积雪时融雪。' },
   stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气，约 6 次）。热食能回暖、提振精神；还能融雪取水、煮沸生水。' },
   gas:    { name: '备用气罐', cat: 'cook', price: 39, weight: 0.3, stack: true, max: 5, desc: '每罐约 6 次烧水。' },
   tablet: { name: '净水片(10片)', cat: 'cook', price: 39, weight: 0.05, stack: true, max: 4, desc: '处理生水，防止急性腹泻。' },

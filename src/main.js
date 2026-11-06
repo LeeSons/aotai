@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { ROUTE, ROUTE_LENGTH, ITEMS, ITEM_USES, BACKPACKS, DIFFICULTY, GAME_MIN_PER_SEC, SEC_PER_GAME_HOUR, SHOP_STOCK, SEASONS, WORLD, routeZ, yToAlt, altToY, segIndexAt, moneyForWins, WIN_BONUS } from './data.js';
 import { mulberry32, clamp, lerp, smoothstep, makeNoise } from './noise.js';
 import { makeWeatherUniforms } from './materials.js';
-import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt } from './terrain.js';
+import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, STREAM } from './terrain.js';
 import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
@@ -876,6 +876,10 @@ class Game {
     if ((env.rain > 0.2 || env.snow > 0.2) && !inv.worn.has('shell') && !inv.worn.has('poncho')) this.tip('rain', '下雨了！立刻按 B 穿上冲锋衣/雨衣，否则很快会被淋透。');
     if (s.balance > 14 && this.player.moving) this.tip('sweat', '你出了很多汗。脱掉一层衣服，汗湿的衣服停下来后会让你迅速失温。');
     if (s.hydration < 35) this.tip('thirst', '口渴了。按 1 喝水。');
+    if (inv.waterCap > 0 && (env.rain > 0.25 || this.snowLocal > 0.15) && inv.water < inv.waterCap * 0.7) this.tip('fieldwater', env.rain > 0.25
+      ? '下雨了——这也是水源。停下来按 E 可以接雨水；有帐篷的话能躲在里面边避雨边接。'
+      : '有积雪的地方就有水。停下来按 E 可以融雪取水（有炉子最快）。');
+    if (inv.waterCap > 0 && inv.water < 0.5 && this.weather.wetGround > 0.55) this.tip('puddle', '水快喝完了。雨后的水洼也能舀水（按 E），但那是生水，要处理过再喝。');
     if (s.satiety < 35) this.tip('hunger', '肚子饿了。按 2 吃点东西，或在背包里选择食物。');
     if (s.exhausted) this.tip('exhaust', '体力耗尽了。按 R 坐下休息，或者放慢脚步。负重越大体力消耗越快。');
     if (this.altitude > 3000) this.tip('alt', '海拔已超过 3000 米。避免奔跑，注意高原反应。');
@@ -904,6 +908,18 @@ class Game {
       if (d < 4 && d < bd) { bd = d; best = { type: 'npc', npc: n, label: n.ranger ? '与管理站工作人员交谈' : '与驴友交谈' }; }
       const m = this.npcMeshes[i]; if (m && d < 20) m.rotation.y = Math.atan2(P.x - n.x, P.z - n.z);
     });
+    // 下撤段溪流：沿着整条溪都能取水
+    if (P.x > STREAM.x0 + 30 && P.x < STREAM.x1 - 30) {
+      const d = Math.abs(P.z - (routeZ(P.x) + STREAM.off));
+      const frozen = SEASONS[this.seasonKey].water <= 0;
+      if (d < 3.6 && d < bd) { bd = d; best = { type: 'water', dry: false, frozen, label: frozen ? '溪流已冻结（凿冰化水）' : '在溪边取水' }; }
+    }
+    // 野外就地取水：水壶没满、而且下着雨 / 有积雪 / 雨后有水洼时才提示
+    const inv = this.inv;
+    if (!best && (inv.waterCap > 0 ? inv.water < inv.waterCap - 0.15 : this.surv.hydration < 70)) {
+      const fw = this.fieldWater();
+      if (fw.any) best = { type: 'field', label: '就地取水：' + fw.primary };
+    }
     this.nearInteract = best;
     const pr = $('prompt');
     if (best && !this.qte) { pr.innerHTML = `<b>E</b>${best.label}`; pr.style.display = 'block'; }
@@ -1033,6 +1049,107 @@ class Game {
     this.msg(`你铲了一锅雪，烧化成了 ${fmt(a, 1)} L 水。`, 'good');
   }
 
+  // ===================== 就地取水：雨水 / 积雪 / 水洼 =====================
+  // 山上的水不一定都得从山下背：下雨可以接雨水，有积雪可以化雪，雨后的水洼也能舀（但要处理）。
+  fieldWater() {
+    const L = this.wxLocal || {};
+    const rain = (L.rain || 0) + (L.snow || 0) * 0.3 + (L.hail || 0) * 0.2;   // 能接到的降水强度
+    const canRain = rain > 0.08;
+    const snow = (this.snowLocal || 0) > 0.15 || (L.snow || 0) > 0.25;
+    const puddle = !snow && (this.weather.wetGround || 0) > 0.55 && this.airTemp > 0.5 && !(this.ti && this.ti.type === 'cliff');
+    return { rain, canRain, snow, puddle, any: canRain || snow || puddle, primary: canRain ? '接雨水' : snow ? '融雪' : puddle ? '舀水洼积水' : '' };
+  }
+
+  // 用什么兜雨水：帐篷外帐最好（人还能躲在帐篷里），其次是铺开的雨衣，再次是锅，最差是只用水壶口接
+  rainCatch() {
+    const inv = this.inv;
+    if (inv.has('tent4') || inv.has('tent3')) return { k: 1, tent: true, how: '你撑起帐篷，让雨水顺着外帐流进锅和水壶里' };
+    if (inv.has('poncho')) return { k: 0.5, how: '你把一次性雨衣铺开兜成一个水槽' };
+    if (inv.has('stove')) return { k: 0.25, how: '你把锅和水壶摆在石头上接水' };
+    return { k: 0.12, how: '你拧开水壶，举着接雨' };
+  }
+
+  fieldWaterMenu() {
+    const o = this.fieldWater(), inv = this.inv;
+    if (!o.any) { this.msg('这里找不到水。下雨时可以接雨水，有积雪可以融雪，雨后的水洼也能舀水。', 'info'); return; }
+    const hasCup = inv.waterCap > 0;
+    const full = hasCup && inv.water > inv.waterCap - 0.05;
+    const parts = [], btns = [];
+    if (o.canRain) {
+      const c = this.rainCatch(), rate = o.rain * 4 * c.k;
+      parts.push(`<p>🌧 <b>雨水</b>比较干净，接到就能喝。${c.how}，按现在的雨势每小时大约能接 <b>${fmt(rate, 1)} L</b>${c.tent ? '，人躲在帐篷里不会被淋湿' : '——但接水的时候你也站在雨里'}。雨要是停了，就接不到了。</p>`);
+      btns.push({ label: '接雨水 30 分钟', disabled: full, action: () => this.collectRain(0.5, c) });
+      btns.push({ label: '接雨水 1 小时', disabled: full, action: () => this.collectRain(1, c) });
+    }
+    if (o.snow) {
+      const stove = inv.has('stove') && inv.gasLeft() > 0;
+      parts.push(`<p>❄ <b>积雪</b>可以化成水。${stove ? '用炉子融雪最快：30 分钟约 1.2 L，耗一次燃气。' : '没有炉子（或没气了），只能把雪塞进水壶、揣在怀里用体温慢慢化——很慢，还会带走不少体温。'}直接吃雪会让你越吃越冷。</p>`);
+      if (stove) btns.push({ label: '用炉子融雪', disabled: full || !hasCup, action: () => this.meltSnow() });
+      if (hasCup) btns.push({ label: '体温化雪 1 小时', disabled: full, action: () => this.bodyMelt() });
+      btns.push({ label: '直接吃几口雪', cls: 'danger', action: () => this.eatSnow() });
+    }
+    if (o.puddle) {
+      parts.push(`<p>💧 雨后地上积着<b>水洼</b>，水很浑，是生水。${inv.has('tablet') ? '舀起来会自动投净水片。' : inv.has('stove') ? '舀起来记得烧开再喝。' : '没有净水片和炉子，喝了很可能腹泻。'}</p>`);
+      btns.push({ label: '舀水洼里的积水', disabled: full, action: () => this.scoopPuddle() });
+    }
+    btns.push({ label: '算了' });
+    this.ui.modal('就地取水', `<p class="muted">水壶 ${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${full ? ' · 已经满了' : ''}</p>${parts.join('')}`, btns);
+  }
+
+  // 没有水壶时，接到的水只能当场喝掉
+  drinkDirect(L) { const s = this.surv; s.hydration = Math.min(100, s.hydration + L / 0.025); s.stats.water += L; }
+
+  collectRain(hours, c) {
+    const inv = this.inv;
+    let got = 0;
+    this.skipTime(hours, 'collect', {
+      title: '接雨水', tent: c.tent,
+      step: (env) => { got += ((env.rain || 0) + (env.snow || 0) * 0.3 + (env.hail || 0) * 0.2) * 4 * c.k / SEC_PER_GAME_HOUR; },
+      done: () => {
+        if (inv.waterCap <= 0) { const a = Math.min(got, 0.8); this.drinkDirect(a); return `<p>你没有水壶，只能仰着头、用手捧着接雨水喝，喝下了大约 ${fmt(a, 1)} L。</p>`; }
+        const a = Math.min(got, inv.waterCap - inv.water);
+        inv.water += a;
+        if (a < 0.05) return '<p>雨下得太小了，几乎没接到水。</p>';
+        return `<p>${c.how}，接到了 <b>${fmt(a, 1)} L</b> 雨水。${got > a + 0.05 ? '水壶已经装满了。' : ''}</p>`;
+      },
+    });
+  }
+
+  bodyMelt() {
+    const inv = this.inv, s = this.surv;
+    this.skipTime(1, 'collect', {
+      title: '体温化雪',
+      step: () => { s.core -= 0.35 / SEC_PER_GAME_HOUR; },
+      done: () => {
+        const a = Math.min(0.5, inv.waterCap - inv.water);
+        inv.water += a;
+        return `<p>你把雪一把把塞进水壶，揣在贴身的衣服里。一个小时后，化出了 <b>${fmt(a, 1)} L</b> 冰凉的水——代价是你的胸口被冰得生疼，身体也更冷了。</p>`;
+      },
+    });
+  }
+
+  eatSnow() {
+    const s = this.surv;
+    s.hydration = Math.min(100, s.hydration + 5); s.core -= 0.3; s.stats.water += 0.2;
+    this.gameMin += 5; this.audio.drink();
+    this.msg(s.core < 35.5 ? '你抓起一把雪塞进嘴里……冰得牙根发痛，身体抖得更厉害了。再这样下去会失温的！' : '你抓起一把雪塞进嘴里，冰得牙根发痛。补了一点水分，但身体更冷了。', s.core < 35.5 ? 'danger' : 'warn');
+  }
+
+  scoopPuddle() {
+    const inv = this.inv, s = this.surv;
+    this.gameMin += 10;
+    if (inv.waterCap <= 0) {
+      this.drinkDirect(0.3); this.audio.drink();
+      if (Math.random() < 0.5 * this.diff.hazard) setTimeout(() => { if (this.state === 'play') { s.addStatus('diarrhea', { t: 150 }); this.msg('水洼里的脏水让你开始腹泻！', 'crit'); } }, 6000);
+      this.msg('你趴在水洼边喝了几口浑水。', 'warn'); return;
+    }
+    const add = inv.waterCap - inv.water;
+    inv.water = inv.waterCap;
+    if (inv.has('tablet') && inv.use('tablet')) this.msg(`你从水洼里舀了 ${fmt(add, 1)} L 浑水，投进了净水片。等泥沙沉下去就能喝了。`, 'good');
+    else { inv.waterRaw += add; this.msg(`你从水洼里舀了 ${fmt(add, 1)} L 浑水。这是生水，最好烧开或用净水片处理再喝。`, 'warn'); }
+    this.audio.drink();
+  }
+
   useItem(id) {
     const inv = this.inv, s = this.surv, st = s.status;
     const H = SEC_PER_GAME_HOUR;
@@ -1156,6 +1273,7 @@ class Game {
         break;
       }
       case 'temple': this.templeMenu(it); break;
+      case 'field': this.fieldWaterMenu(); break;
       case 'shop': this.shopMenu(it); break;
       case 'npc': this.talkNPC(it.npc); break;
     }
@@ -1250,7 +1368,8 @@ class Game {
   }
 
   // 快速推进时间（睡觉/休息）
-  skipTime(hours, mode) {
+  // job：就地取水等需要原地耗时的事情 { title, tent, step(env), done() → html }
+  skipTime(hours, mode, job) {
     const s = this.surv, inv = this.inv, pl = this.player;
     const steps = Math.round(hours * SEC_PER_GAME_HOUR);
     this.sleeping = true;
@@ -1259,7 +1378,7 @@ class Game {
     black.style.opacity = 1;
     const notes = new Set();
     let woke = null, qSum = 0, n = 0, torn = false;
-    const tentMode = mode === 'tent';
+    const tentMode = mode === 'tent' || !!(job && job.tent);
     const sleepMode = mode === 'tent' || mode === 'outside' || mode === 'templeSleep';
     const flat = pl.terrainNormal(pl.pos.x, pl.pos.z).y > 0.86 && !pl.onRock;
     setTimeout(() => {
@@ -1283,24 +1402,26 @@ class Game {
         env.sleepQ = clamp(q, 0.1, 1.2);
         qSum += env.sleepQ; n++;
         s.update(1, env, { msg: (t) => notes.add(t), gearChanged: () => pl.setGear(inv), onExpire: (kk) => { if (kk === 'tick') s.addStatus('fever', { t: 520 }); } });
+        if (job && job.step) job.step(env, i);
         // 帐篷被撕裂
         if (tentMode && !inv.tentDamaged && inv.has('tent3') && !inv.has('tent4') && this.windLocal >= 8 && this.rng() < 0.02) { inv.tentDamaged = true; torn = true; }
         if (s.health <= 0) { woke = 'dead'; break; }
         if (sleepMode && i > 20 && (s.core < 34.6 || s.health < 15 || s.hydration < 3)) { woke = s.core < 34.6 ? '你被冻醒了，浑身止不住地发抖……' : '你在剧烈的不适中醒来。'; break; }
+        if (job && i > 3 && (s.core < 34.8 || s.health < 15)) { woke = '你冷得受不了，只好提前停了下来。'; break; }
       }
       this.sleeping = false;
       if (this.campTent) { this.scene.remove(this.campTent); this.campTent = null; }
       if (woke === 'dead') { black.style.opacity = 0; this.die(s.cause || '失温', true); return; }
       const avgQ = n ? qSum / n : 1;
       const qName = !sleepMode ? '' : avgQ > 0.9 ? '不错' : avgQ > 0.65 ? '一般' : avgQ > 0.4 ? '很差' : '几乎没睡着';
-      let html = `<p>${sleepMode ? `你睡了 ${Math.round(n / SEC_PER_GAME_HOUR * 10) / 10} 小时。睡眠质量：<b>${qName}</b>。` : `你休息了 ${hours} 小时。`}</p>`;
+      let html = job ? job.done() : `<p>${sleepMode ? `你睡了 ${Math.round(n / SEC_PER_GAME_HOUR * 10) / 10} 小时。睡眠质量：<b>${qName}</b>。` : `你休息了 ${hours} 小时。`}</p>`;
       if (woke) html += `<p style="color:#e0483c">${woke}</p>`;
       if (torn) html += `<p style="color:#e0483c">夜里的狂风把你的三季帐篷撕开了一道大口子！之后的夜晚它将很难挡风挡雨。</p>`;
       for (const t of [...notes].slice(-4)) html += `<p class="muted">${t}</p>`;
       const h = this.hour();
       html += `<p class="muted">现在是第 ${Math.floor(this.gameMin / 1440) + 1} 天 ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}，天气：${this.wxLabel().name}，气温 ${fmt(this.airTemp, 0)}℃。</p>`;
       black.style.opacity = 0;
-      this.ui.modal(sleepMode ? '醒来' : '休息结束', html);
+      this.ui.modal(job ? job.title : sleepMode ? '醒来' : '休息结束', html);
       pl.setGear(inv);
     }, 1300);
   }
