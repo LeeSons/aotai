@@ -12,6 +12,7 @@ import { Inventory, Survival } from './survival.js';
 import { Hazards } from './hazards.js';
 import { Audio } from './audio.js';
 import { UI, fmt } from './ui.js';
+import { IS_TOUCH, TouchControls } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 const DN = makeNoise(31337);
@@ -74,7 +75,9 @@ class Game {
   constructor() {
     this.canvas = $('gl');
     const R = this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
-    R.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // 手机 / 平板：起步分辨率和阴影贴图更省，帧率富余时再由自适应分辨率往上调
+    this.prMax = Math.min(window.devicePixelRatio, IS_TOUCH ? 1.25 : 1.5);
+    R.setPixelRatio(IS_TOUCH ? Math.min(this.prMax, 1) : this.prMax);
     R.setSize(window.innerWidth, window.innerHeight);
     R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
     R.toneMapping = THREE.ACESFilmicToneMapping; R.toneMappingExposure = 1.0;
@@ -86,7 +89,7 @@ class Game {
 
     // 后期
     const sz = R.getDrawingBufferSize(new THREE.Vector2());
-    this.rt = new THREE.WebGLRenderTarget(sz.x, sz.y, { type: THREE.HalfFloatType, samples: 4 });
+    this.rt = new THREE.WebGLRenderTarget(sz.x, sz.y, { type: THREE.HalfFloatType, samples: IS_TOUCH ? 2 : 4 });
     this.postU = { tDiffuse: { value: this.rt.texture }, uRes: { value: sz.clone() }, uTime: { value: 0 }, uBlur: { value: 0 }, uDesat: { value: 0 }, uCold: { value: 0 }, uAber: { value: 0 }, uPulse: { value: 0 }, uExposure: { value: 1 }, uGrain: { value: 0.035 }, uRed: { value: 0 } };
     this.postScene = new THREE.Scene();
     this.postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -99,7 +102,7 @@ class Game {
     buildVegetation('autumn');
     this.sun = new THREE.DirectionalLight(0xffffff, 3);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.setScalar(IS_TOUCH ? 1024 : 2048);
     const sc = this.sun.shadow.camera; sc.left = -60; sc.right = 60; sc.top = 60; sc.bottom = -60; sc.near = 1; sc.far = 700;
     this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.04;
     this.scene.add(this.sun); this.scene.add(this.sun.target);
@@ -140,6 +143,7 @@ class Game {
 
     this.bindInput();
     this.bindMenus();
+    if (IS_TOUCH) this.touch = new TouchControls(this);
     window.addEventListener('resize', () => this.resize());
     this.clock = new THREE.Clock();
     this.terrain.update(this.titleX, routeZ(this.titleX), 0, true);
@@ -260,7 +264,9 @@ class Game {
       setTimeout(() => this.msg(S.desc, 'warn'), 1200);
       setTimeout(() => this.msg('鳌太线整体自西向东。跟着山脊上的红布条和石堆路标走。', 'info'), 2500);
       setTimeout(() => this.msg(`${dressed ? `出发前你按山下的气温穿好了：${dressed}。` : ''}山下林子里风小、天气温和；上了林线、到了山脊，风雨会狠得多——冷了按 B 打开背包加衣，爬坡出汗时减衣。`, 'info'), 6500);
-      setTimeout(() => this.msg('点击画面锁定鼠标控制视角。Shift 快跑、C 蹲行、Z 匍匐、X 登山杖，按 H 查看全部操作。', 'info'), 10500);
+      setTimeout(() => this.msg(this.touch
+        ? '左手摇杆移动，右手在画面上滑动转视角、双指捏合调整视距。右下角跳 / 跑 / 蹲 / 趴，底部是常用操作，Ⅱ 暂停里有全部说明。'
+        : '点击画面锁定鼠标控制视角。Shift 快跑、C 蹲行、Z 匍匐、X 登山杖，按 H 查看全部操作。', 'info'), 10500);
       this.saveCheckpoint();
     });
   }
@@ -643,7 +649,7 @@ class Game {
     const raw = this.clock.getDelta();
     let dt = Math.min(raw, 0.05);
     // 自适应分辨率：帧率低时自动降低渲染分辨率
-    const P = this.perf || (this.perf = { acc: 0, n: 0, max: Math.min(window.devicePixelRatio, 1.5), pr: Math.min(window.devicePixelRatio, 1.5) });
+    const P = this.perf || (this.perf = { acc: 0, n: 0, max: this.prMax, pr: this.renderer.getPixelRatio() });
     if (raw < 0.25) { P.acc += raw; P.n++; }
     if (P.acc > 2.5) {
       const avg = P.acc / P.n;
@@ -658,6 +664,7 @@ class Game {
     else if (this.state === 'play') this.playFrame(dt);
     else if (this.state === 'dead' || this.state === 'end') this.endFrame(dt);
     this.ui.tick(dt);
+    if (this.touch) this.touch.update();
     this.render();
   }
 
@@ -719,6 +726,9 @@ class Game {
     const k = this.keys;
     this.input.f = !!k.f; this.input.b = !!k.b; this.input.l = !!k.l; this.input.r = !!k.r;
     this.input.sprint = !!k.sprint; this.input.crouch = !!k.crouch; this.input.jump = !!k.jump && !this.qte; this.input.warm = !!k.warm;
+    // 触屏摇杆：模拟量方向（电脑端恒为 0，走原来的 WASD 逻辑）
+    const st = this.touch && this.touch.stick;
+    this.input.ax = st ? st.x : 0; this.input.ay = st ? st.y : 0;
     if (k.yl) pl.camYaw -= dt * 1.8; if (k.yr) pl.camYaw += dt * 1.8;
     if (k.pu) pl.camPitch = clamp(pl.camPitch + dt * 1.2, -1.25, 0.95); if (k.pd) pl.camPitch = clamp(pl.camPitch - dt * 1.2, -1.25, 0.95);
     const coldSway = s.core < 34 ? Math.sin(this.time * 7) * (34 - s.core) * 0.04 : 0;

@@ -2,8 +2,22 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0d10">
 <title>鳌太 · 九死一生</title>
+<script>
+// 同一个入口自动识别设备：主指针是触屏（手机 / 平板）→ 触屏操作；电脑 → 键鼠操作。
+// 调试时可用 ?touch=1 / ?touch=0 强制切换。
+(function () {
+  var q = /[?&]touch=([01])/.exec(location.search), t;
+  if (q) t = q[1] === '1';
+  else t = (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) && window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  if (t) document.documentElement.classList.add('touch');
+})();
+</script>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 </head>

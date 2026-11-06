@@ -222,11 +222,21 @@ export class Player {
     if (this.coma) { this.ko = Math.max(this.ko, 1.2); this.sitting = false; }
     const locked = mods.locked || this.ko > 0 || this.rise > 0;
     let back = false, strafe = false;
+    // 触屏摇杆给的是模拟量（ax 右 / ay 前，0–1）；键盘时两者都为 0，走原来的 WASD 逻辑
+    const analog = !!(input.ax || input.ay);
+    const aMag = analog ? Math.min(1, Math.hypot(input.ax, input.ay)) : 1;
+    const fwdIn = analog ? input.ay > 0.5 : input.f;
     if (!locked) {
-      if (input.f) wish.add(fwd);
-      if (input.b) { wish.sub(fwd); back = !input.f; }
-      if (input.r) { wish.add(right); strafe = true; }
-      if (input.l) { wish.sub(right); strafe = true; }
+      if (analog) {
+        wish.addScaledVector(fwd, input.ay).addScaledVector(right, input.ax);
+        back = input.ay < 0 && -input.ay > Math.abs(input.ax) * 1.4;   // 摇杆往正后方拉 = 后退（同 S 键）
+        strafe = Math.abs(input.ax) > Math.abs(input.ay);
+      } else {
+        if (input.f) wish.add(fwd);
+        if (input.b) { wish.sub(fwd); back = !input.f; }
+        if (input.r) { wish.add(right); strafe = true; }
+        if (input.l) { wish.sub(right); strafe = true; }
+      }
     }
     // 鬼打墙：方向感偏移
     if (mods.drift) wish.applyAxisAngle(new THREE.Vector3(0, 1, 0), mods.drift);
@@ -239,9 +249,10 @@ export class Player {
     if (this.warming) { this.stompT = (this.stompT || 0) - dt; if (this.stompT <= 0) { this.stompT = 0.36; this.events.push({ type: 'stomp' }); } }
     // 快跑会让人站起来
     if (input.sprint && wantMove && this.stance === 'crouch' && mods.canSprint) this.setStance('stand');
-    this.sprinting = input.sprint && wantMove && mods.canSprint && this.stance === 'stand' && !this.sliding && input.f && !locked;
+    this.sprinting = input.sprint && wantMove && mods.canSprint && this.stance === 'stand' && !this.sliding && fwdIn && !locked;
     const base = this.sprinting ? SPEED.run : this.stance === 'crouch' ? SPEED.crouch : this.stance === 'prone' ? SPEED.prone : SPEED.walk;
-    let speed = base * mods.speedMult * (back ? 0.6 : strafe && !input.f ? 0.85 : 1);
+    let speed = base * mods.speedMult * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
+    if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
 
     const gNow = groundAt(p.x, p.z);
