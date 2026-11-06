@@ -215,9 +215,11 @@ export class Survival {
     this.stats.kcal += kcal * PER_H * dt;
 
     // ---- 口渴 ----
-    let L = env.sleeping ? 0.045 : act === 0 ? 0.075 : act >= 2 ? 0.42 : act > 1 ? 0.3 : 0.22;
-    if (env.airTemp > 18) L *= 1.4;
-    if (env.altitude > 3000) L *= 1.15;
+    // 升/游戏小时。山上气温低，稳步徒步每小时只需 0.12–0.16 L：喝足水后连续爬坡半天不喝会很渴，但远不致命；
+    // 身体储水 2.5 L（水分 100 → 0），口渴时喝一口（0.25 L）就能再顶一个半小时以上。
+    let L = env.sleeping ? 0.025 : act === 0 ? 0.045 : act >= 2 ? 0.3 : act > 1 ? 0.16 : 0.12;
+    if (env.airTemp > 18) L *= 1.35;
+    if (env.altitude > 3000) L *= 1.1;
     if (st.elec) L *= 0.75;
     if (st.diarrhea) L += 0.4;
     if (st.fever) L += 0.1;
@@ -238,12 +240,22 @@ export class Survival {
     if (env.warming) this.stamina -= 10 * lf * dt;
     else if (env.sprint) this.stamina -= 9 * lf * dt * (this.mental < 15 ? 1.3 : 1);
     else if (env.moving) {
-      let d = Math.max(0, env.uphill - 0.1) * 7.2 * lf + (env.stone ? 1.8 * lf : 0) + (env.mud ? env.mud * (0.8 + Math.abs(env.uphill) * 2) * lf : 0) + (lf > 1.8 ? (lf - 1.8) * 1.3 : 0);
-      if (env.stance === 'crouch') d += 0.9 * lf;
-      if (env.stance === 'prone') d += 1.7 * lf;
-      if (env.poles) d *= 0.75;
-      if (env.altitude > 3200) d *= 1.12;
-      this.stamina += (d > 0 ? -d : 2.2) * dt;
+      // 稳步徒步是有氧运动：健康的成年人慢慢走、慢慢爬，可以走很久。
+      // 体力会降到与坡度 / 负重 / 地形相称的水平然后稳住（越陡越累，但不会走着走着就力竭）；
+      // 只有超负荷——负重过重 + 陡坡乱石 + 高海拔叠在一起——才会持续透支直到力竭。
+      let e = Math.max(0, env.uphill - 0.08) * 1.5 + (env.stone ? 0.22 : 0) + (env.mud ? env.mud * (0.25 + Math.abs(env.uphill)) : 0);
+      if (env.stance === 'crouch') e += 0.25;
+      if (env.stance === 'prone') e += 0.45;
+      e = e * lf + Math.max(0, lf - 1.5) * 0.6;
+      if (env.poles) e *= 0.8;
+      if (env.altitude > 3200) e *= 1.1;
+      this.effort = lerp(this.effort || 0, e, 1 - Math.exp(-1.5 * dt));   // 平滑掉乱石上一步一跳的坡度
+      const ef = this.effort;
+      const target = maxSta * clamp(1 - ef * 0.55, 0.2, 1);
+      const over = Math.max(0, ef - 1.15) * 3;   // 超负荷部分：在平衡点之下继续透支
+      if (this.stamina > target) this.stamina -= Math.min(this.stamina - target, 0.9 * dt);
+      else if (!over) this.stamina += Math.min(target - this.stamina, 1.6 * dt);
+      this.stamina -= over * dt;
     } else if (!env.sleeping) this.stamina += (env.resting ? 14 : 8) * dt * clamp(0.4 + this.energy / 120, 0.4, 1);
     else this.stamina = maxSta;
     this.stamina = clamp(this.stamina, 0, maxSta);
