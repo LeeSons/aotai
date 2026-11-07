@@ -28,6 +28,7 @@ b { color: var(--gold); font-weight: 600; }
 .btn.ghost:hover { border-color: var(--gold); }
 .btn.small { padding: 4px 10px; font-size: 12px; letter-spacing: 0; }
 .btn.danger { border-color: rgba(224, 72, 60, 0.6); background: rgba(224, 72, 60, 0.15); }
+.btn.on { border-color: rgba(216, 180, 106, 0.8); background: rgba(216, 180, 106, 0.18); color: #f0d79a; }
 .btn:disabled { opacity: .35; cursor: not-allowed; }
 .row-btns { display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
 

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { ROUTE, ROUTE_LENGTH, ITEMS, ITEM_USES, BACKPACKS, DIFFICULTY, GAME_MIN_PER_SEC, SEC_PER_GAME_HOUR, SHOP_STOCK, SEASONS, WORLD, routeZ, yToAlt, altToY, segIndexAt, moneyForWins, WIN_BONUS } from './data.js';
 import { mulberry32, clamp, lerp, smoothstep, makeNoise } from './noise.js';
 import { makeWeatherUniforms } from './materials.js';
-import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, STREAM } from './terrain.js';
+import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, openAt, STREAM } from './terrain.js';
 import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
@@ -65,19 +65,39 @@ const NPC_LINES = [
   '下午容易起雷暴，尽量趁上午过山脊。打雷的时候千万别站在高处。',
   '冷了就加衣服，别等发抖了再穿。衣服湿了一定要换，湿衣服比不穿还冷。',
   '羚牛看着憨，冲起来能把人顶下山崖。离远点，绕开走，千万别跑。',
-  '起雾的时候跟着红布条走，宁可原地等雾散，也别乱下沟。',
+  '起雾的时候四周都长一个样，看不清路就原地等雾散，千万别乱下沟。',
   '去年有个人在这附近失温，发现的时候外套都脱了……说是重度失温的人会觉得热。',
   '水要省着喝，但别等渴了才喝。前面的水源不一定有水。',
   '你一个人走？胆子真大。手机在这儿没信号的，出了事谁也找不到你。',
 ];
 
+// ===================== 画质 =====================
+// 渲染倍率（相对屏幕的 CSS 像素，不超过设备像素比）在 min–max 之间按帧率自动调整
+const GFX = {
+  low:   { name: '流畅', desc: '帧率优先。分辨率最低、关闭抗锯齿，适合发热或较旧的手机', min: 0.6, max: 1.0, shadow: 1024, msaa: 0 },
+  mid:   { name: '均衡', desc: '清晰度和流畅度兼顾，卡顿时自动降低分辨率', min: 0.85, max: 1.5, start: 1.25, shadow: 1024, msaa: 2 },
+  high:  { name: '高清', desc: '更高的分辨率和阴影精度。帧率不够时仍会自动降一点', min: 0.75, max: 2.0, shadow: 2048, msaa: 4 },
+  ultra: { name: '极致', desc: '按屏幕原生分辨率渲染，不自动降低。最清晰也最耗电发热', min: 9, max: 3.0, shadow: 4096, msaa: 4 },
+};
+function loadGfx() {
+  try { const k = localStorage.getItem('aotai_gfx'); if (GFX[k]) return k; } catch (e) { /* 无存储 */ }
+  return IS_TOUCH ? 'mid' : 'high';
+}
+function gfxRange(key) {
+  const L = GFX[key], dpr = window.devicePixelRatio || 1;
+  const max = Math.min(dpr, L.max), min = Math.min(max, L.min);
+  return { max, min, start: L.start ? clamp(L.start, min, max) : max };
+}
+
 class Game {
   constructor() {
     this.canvas = $('gl');
     const R = this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
-    // 手机 / 平板：起步分辨率和阴影贴图更省，帧率富余时再由自适应分辨率往上调
-    this.prMax = Math.min(window.devicePixelRatio, IS_TOUCH ? 1.25 : 1.5);
-    R.setPixelRatio(IS_TOUCH ? Math.min(this.prMax, 1) : this.prMax);
+    // 画质：手机默认「均衡」、电脑默认「高清」，可在标题画面 / 暂停菜单里切换
+    this.gfxKey = loadGfx();
+    const GR = gfxRange(this.gfxKey);
+    this.perf = { acc: 0, n: 0, max: GR.max, min: GR.min, pr: GR.start };
+    R.setPixelRatio(GR.start);
     R.setSize(window.innerWidth, window.innerHeight);
     R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
     R.toneMapping = THREE.ACESFilmicToneMapping; R.toneMappingExposure = 1.0;
@@ -89,7 +109,7 @@ class Game {
 
     // 后期
     const sz = R.getDrawingBufferSize(new THREE.Vector2());
-    this.rt = new THREE.WebGLRenderTarget(sz.x, sz.y, { type: THREE.HalfFloatType, samples: IS_TOUCH ? 2 : 4 });
+    this.rt = new THREE.WebGLRenderTarget(sz.x, sz.y, { type: THREE.HalfFloatType, samples: GFX[this.gfxKey].msaa });
     this.postU = { tDiffuse: { value: this.rt.texture }, uRes: { value: sz.clone() }, uTime: { value: 0 }, uBlur: { value: 0 }, uDesat: { value: 0 }, uCold: { value: 0 }, uAber: { value: 0 }, uPulse: { value: 0 }, uExposure: { value: 1 }, uGrain: { value: 0.035 }, uRed: { value: 0 } };
     this.postScene = new THREE.Scene();
     this.postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -102,7 +122,7 @@ class Game {
     buildVegetation('autumn');
     this.sun = new THREE.DirectionalLight(0xffffff, 3);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.setScalar(IS_TOUCH ? 1024 : 2048);
+    this.sun.shadow.mapSize.setScalar(GFX[this.gfxKey].shadow);
     const sc = this.sun.shadow.camera; sc.left = -60; sc.right = 60; sc.top = 60; sc.bottom = -60; sc.near = 1; sc.far = 700;
     this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.04;
     this.scene.add(this.sun); this.scene.add(this.sun.target);
@@ -165,6 +185,7 @@ class Game {
     const ui = this.ui;
     $('btn-start').onclick = () => { this.audio.init(); this.audio.ui(); ui.hide('screen-title'); this.toSeason(); };
     $('btn-help').onclick = () => { this.audio.init(); ui.modal('操作说明', ui.helpHTML()); };
+    $('btn-gfx').onclick = () => { this.audio.init(); this.gfxMenu(); };
     $('btn-about').onclick = () => {
       this.audio.init();
       ui.modal('关于鳌太线', `<p>鳌太线是指从秦岭鳌山到太白山拔仙台的高海拔山脊穿越线路，全程约 170 公里，主脊海拔 3200–3700 米，被称为“中国十大最危险徒步路线”之一。</p>
@@ -262,7 +283,7 @@ class Game {
       const S = SEASONS[this.seasonKey];
       this.ui.titleCard(`第 1 天 · ${S.full}`, '塘口村', '海拔 1750 m', ROUTE[0].desc);
       setTimeout(() => this.msg(S.desc, 'warn'), 1200);
-      setTimeout(() => this.msg('鳌太线整体自西向东。跟着山脊上的红布条和石堆路标走。', 'info'), 2500);
+      setTimeout(() => this.msg('鳌太线整体自西向东，沿着主脊走。脚下踩出来的小路就是路线；到了石海和开阔的草甸，路迹会变淡甚至消失，要对照地图和方向。', 'info'), 2500);
       setTimeout(() => this.msg(`${dressed ? `出发前你按山下的气温穿好了：${dressed}。` : ''}山下林子里风小、天气温和；上了林线、到了山脊，风雨会狠得多——冷了按 B 打开背包加衣，爬坡出汗时减衣。`, 'info'), 6500);
       setTimeout(() => this.msg(this.touch
         ? '左手摇杆移动，右手在画面上滑动转视角、双指捏合调整视距。右下角跳 / 跑 / 蹲 / 趴，底部是常用操作，Ⅱ 暂停里有全部说明。'
@@ -435,11 +456,43 @@ class Game {
     }
   }
 
+  // 切换画质：分辨率范围、阴影贴图、抗锯齿
+  setGfx(key) {
+    if (!GFX[key]) return;
+    this.gfxKey = key;
+    try { localStorage.setItem('aotai_gfx', key); } catch (e) { /* */ }
+    const L = GFX[key], GR = gfxRange(key);
+    Object.assign(this.perf, { acc: 0, n: 0, max: GR.max, min: GR.min, pr: GR.start });
+    this.renderer.setPixelRatio(GR.start);
+    if (this.sun.shadow.mapSize.x !== L.shadow) {
+      this.sun.shadow.mapSize.setScalar(L.shadow);
+      if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; }
+    }
+    if (this.rt.samples !== L.msaa) {
+      const old = this.rt;
+      this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: L.msaa });
+      this.postU.tDiffuse.value = this.rt.texture;
+      old.dispose();
+    }
+    this.resize();
+  }
+
+  gfxMenu(back) {
+    document.exitPointerLock && document.exitPointerLock();
+    const dpr = window.devicePixelRatio || 1;
+    const cur = GFX[this.gfxKey];
+    const rows = Object.entries(GFX).map(([k, L]) => `<p${k === this.gfxKey ? ' style="color:#d8b46a"' : ''}><b>${L.name}</b>${k === this.gfxKey ? '（当前）' : ''}：${L.desc}</p>`).join('');
+    const btns = Object.entries(GFX).map(([k, L]) => ({ label: (k === this.gfxKey ? '✓ ' : '') + L.name, cls: k === this.gfxKey ? 'on' : '', action: () => { this.setGfx(k); this.gfxMenu(back); } }));
+    btns.push({ label: '完成', action: back });
+    this.ui.modal('画质', `${rows}<p class="muted">当前：${cur.name} · 渲染倍率 ${fmt(this.perf.pr, 2)}×（屏幕 ${fmt(dpr, 1)}×）。画面糊就往上调，发烫卡顿就往下调。设置会自动保存。</p>`, btns);
+  }
+
   pauseMenu() {
     document.exitPointerLock && document.exitPointerLock();
     this.ui.modal('暂停', `<p class="muted">时间已暂停。</p>`, [
       { label: '继续' },
       { label: '操作说明', action: () => setTimeout(() => this.ui.modal('操作说明', this.ui.helpHTML()), 0) },
+      { label: `画质：${GFX[this.gfxKey].name}`, action: () => setTimeout(() => this.gfxMenu(() => this.pauseMenu()), 0) },
       { label: this.audio.master && this.audio.master.gain.value > 0 ? '静音' : '开启声音', action: () => { if (this.audio.master) this.audio.setMaster(this.audio.master.gain.value > 0 ? 0 : 0.8); } },
       { label: '返回标题', cls: 'danger', action: () => this.toTitle() },
     ]);
@@ -541,7 +594,8 @@ class Game {
     const lamp = this.lampOn && this.inv && this.inv.battery.lamp > 0;
     this.darkness = smoothstep(0.02, -0.12, sunY) * (W.p.cloud > 0.8 ? 1 : 0.85);
     const dark = this.darkness > 0.7 && !lamp && P.x > 5 && P.x < ROUTE_LENGTH - 30;
-    const lost = ti.ad > (ti.type === 'cliff' || ti.type === 'ridge' ? 18 : 30) && P.x > 15 && P.x < ROUTE_LENGTH - 20;
+    // 开阔台地上可以离开路迹走一段，但走远了照样会迷失方向（起雾时四面八方都一样）
+    const lost = ti.ad > (ti.type === 'cliff' || ti.type === 'ridge' ? 18 : 30 + openAt(P.x) * 45) && P.x > 15 && P.x < ROUTE_LENGTH - 20;
     // 断崖边缘提示（大雾中只能靠声音）
     const toEdge = edgeAt(ti.type, ti.d, P.x) - ti.ad;
     if (P.x > 70 && P.x < ROUTE_LENGTH - 90 && ti.type !== 'gully') {
@@ -552,7 +606,7 @@ class Game {
       }
       if (toEdge > 12) this.edgeWarned = false;
     }
-    if (lost && !this.lost) { this.msg('你偏离了主脊！周围的一切都变得陌生……回到有红布条路标的山脊上去，千万别往沟里走！', 'crit'); this.dangerCount++; }
+    if (lost && !this.lost) { this.msg('你偏离了主脊！周围的一切都变得陌生……回到主脊的路迹上去，千万别往沟里走！', 'crit'); this.dangerCount++; }
     this.lost = lost;
     const key = W.p.key;
     const pl = this.player;
@@ -649,12 +703,12 @@ class Game {
     const raw = this.clock.getDelta();
     let dt = Math.min(raw, 0.05);
     // 自适应分辨率：帧率低时自动降低渲染分辨率
-    const P = this.perf || (this.perf = { acc: 0, n: 0, max: this.prMax, pr: this.renderer.getPixelRatio() });
+    const P = this.perf;
     if (raw < 0.25) { P.acc += raw; P.n++; }
     if (P.acc > 2.5) {
       const avg = P.acc / P.n;
       let npr = P.pr;
-      if (avg > 1 / 42 && P.pr > 0.7) npr = Math.max(0.7, P.pr - 0.15);
+      if (avg > 1 / 42 && P.pr > P.min) npr = Math.max(P.min, P.pr - 0.15);
       else if (avg < 1 / 58 && P.pr < P.max) npr = Math.min(P.max, P.pr + 0.1);
       if (npr !== P.pr) { P.pr = npr; this.renderer.setPixelRatio(npr); this.resize(); }
       P.acc = 0; P.n = 0;
@@ -1300,7 +1354,7 @@ class Game {
   talkNPC(n) {
     const s = this.surv, inv = this.inv;
     if (n.ranger) {
-      this.ui.modal('管理站工作人员', `<p>“这条线早就禁止穿越了，你知道吧？”他皱着眉头看了你半天，叹了口气。</p><p>“既然都走到这儿了……上拔仙台就往东，下撤走大文公庙、放羊寺、平安寺。到了平安寺往羊皮沟下，<b>只沿着溪流和路标走，千万别钻野沟</b>。”</p><p>“小卖部有方便面和气罐，贵是贵点。”</p>`);
+      this.ui.modal('管理站工作人员', `<p>“这条线早就禁止穿越了，你知道吧？”他皱着眉头看了你半天，叹了口气。</p><p>“既然都走到这儿了……上拔仙台就往东，下撤走大文公庙、放羊寺、平安寺。到了平安寺往羊皮沟下，<b>只沿着溪流走，千万别钻野沟</b>。”</p><p>“小卖部有方便面和气罐，贵是贵点。”</p>`);
       if (!n.talked) { n.talked = true; s.mental = Math.min(100, s.mental + 10); }
       return;
     }

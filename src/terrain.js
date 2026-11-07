@@ -25,7 +25,7 @@ export function profileY(x) {
   const lo = Math.min(p1, p2) - 6, hi = Math.max(p1, p2) + 6;
   y = clamp(y, lo, hi);
   // 段内起伏（地标处为 0）
-  const und = Math.sin(Math.PI * t);
+  const und = Math.sin(Math.PI * t) * (1 - openAt(x) * 0.55);   // 开阔台地上是稳稳的缓坡，没有忽上忽下
   y += und * (N.noise2(x * 0.012, 3.3) * 6 + N.noise2(x * 0.03, 9.1) * 1.5);
   return y;
 }
@@ -57,18 +57,30 @@ export function cliffSideAt(x) { return Math.sin(x * 0.004) > 0 ? 1 : -1; }
 
 // 主脊两侧的断崖带：走偏到这里就是绝壁
 const EDGE_BASE = { ridge: 27, cliff: 23, stone: 46, pillars: 44, meadow: 48, forest: 40, dead: 38, gully: 30 };
-export function edgeAt(type, d, x) {
+export function edgeAt(type, d, x, op = openAt(x)) {
   const side = d >= 0 ? 1 : -1;
-  return (EDGE_BASE[type] || 40) + N.noise2(x * 0.008, side * 13.7) * 8 + N.noise2(x * 0.03, side * 5.1) * 3;
+  return (EDGE_BASE[type] || 40) + op * 420 + N.noise2(x * 0.008, side * 13.7) * 8 + N.noise2(x * 0.03, side * 5.1) * 3;
 }
-function cliffBand(type, d, x) {
+function cliffBand(type, d, x, op) {
   if (x < 70 || x > ROUTE_LENGTH - 90 || type === 'gully') return 0;
-  const k = Math.abs(d) - edgeAt(type, d, x);
+  const k = Math.abs(d) - edgeAt(type, d, x, op);
   if (k <= 0) return 0;
   return -Math.min(k * 2.6, 80 + k * 0.25);
 }
 
 function typeAt(i) { return ROUTE[clamp(i, 0, ROUTE.length - 2)].seg; }
+function openOf(i) { return ROUTE[clamp(i, 0, ROUTE.length - 2)].open || 0; }
+
+// 开阔台地程度（盆景园、西塬、东塬……），在段与段之间平滑过渡
+export function openAt(x) {
+  const sb = segBlend(x);
+  return sb.w < 1 ? lerp(openOf(sb.j), openOf(sb.i), sb.w) : openOf(sb.i);
+}
+// 开阔台地的截面：几百米宽，两侧几乎感觉不到坡度，远处才圆滑地落下去——站在上面看不到边
+function crossOpen(d) {
+  const ad = Math.abs(d);
+  return -Math.pow(ad / 160, 2) * 6 - Math.pow(Math.max(ad - 190, 0), 1.35) * 0.06;
+}
 
 // 返回 {i, j, w}：当前段与相邻段的混合
 function segBlend(x) {
@@ -93,12 +105,14 @@ export function heightAt(x, z) {
   const ad = Math.abs(d);
   const base = profileY(x);
   const sb = segBlend(x);
-  let off = cross(typeAt(sb.i), d, x) + cliffBand(typeAt(sb.i), d, x);
-  if (sb.w < 1) off = lerp(cross(typeAt(sb.j), d, x) + cliffBand(typeAt(sb.j), d, x), off, sb.w);
+  const op = sb.w < 1 ? lerp(openOf(sb.j), openOf(sb.i), sb.w) : openOf(sb.i);
+  let off = cross(typeAt(sb.i), d, x) + cliffBand(typeAt(sb.i), d, x, op);
+  if (sb.w < 1) off = lerp(cross(typeAt(sb.j), d, x) + cliffBand(typeAt(sb.j), d, x, op), off, sb.w);
+  if (op > 0) off = lerp(off, crossOpen(d), op);
   // 起点和终点之外：平缓谷地
   if (x < -20) off *= smoothstep(-200, -20, x);
   // 远处群山
-  const far = smoothstep(180, 900, ad);
+  const far = smoothstep(180 + op * 220, 900 + op * 200, ad);
   off = Math.max(off, -260 - ad * 0.05);
   if (far > 0) {
     const mtn = N.ridged(x * 0.0016 + 4.0, z * 0.0016, 5) * 420 + N.fbm(x * 0.0007, z * 0.0007, 3) * 180;
@@ -107,8 +121,10 @@ export function heightAt(x, z) {
   // 细节噪声（路上小，远处大）
   const st = typeAt(sb.i);
   const nearT = smoothstep(3, 22, ad); // 路迹附近地面更平顺
-  const amp = 0.45 + nearT * 0.9 + Math.min(ad, 120) * 0.05;
-  let det = N.fbm(x * 0.035, z * 0.035, 4) * amp + N.fbm(x * 0.008, z * 0.008, 3) * (2.5 + nearT * 1.5 + Math.min(ad, 300) * 0.08);
+  // 开阔台地上只有平缓的起伏，没有越往外越大的坑坑洼洼
+  const grow = 1 - op * 0.85;
+  const amp = 0.45 + nearT * 0.9 * (1 - op * 0.4) + Math.min(ad, 120) * 0.05 * grow;
+  let det = N.fbm(x * 0.035, z * 0.035, 4) * amp + N.fbm(x * 0.008, z * 0.008, 3) * (2.5 + nearT * 1.5 + Math.min(ad, 300) * 0.08 * grow) * (1 - op * 0.3);
   if (st === 'stone' || st === 'pillars') det += N2.ridged(x * 0.09, z * 0.09, 2) * (0.5 + nearT * 1.1);
   let y = base + off + det;
   // 湖盆
@@ -184,7 +200,7 @@ function colorAt(x, z, y, ny, out) {
   const P = pal();
   const n1 = N.noise2(x * 0.05, z * 0.05), n2 = N2.noise2(x * 0.2, z * 0.2);
   let t = ti.type;
-  if (ti.ad > 260) t = alt < 2900 ? 'forest' : alt < 3350 ? 'meadow' : 'rockfar';
+  if (ti.ad > 260 + openAt(x) * 260) t = alt < 2900 ? 'forest' : alt < 3350 ? 'meadow' : 'rockfar';
   switch (t) {
     case 'forest': case 'gully': out.copy(P.forest).lerp(P.forest2, 0.5 + 0.5 * n1); break;
     case 'dead': out.copy(P.dead).lerp(P.forest2, 0.5 + 0.5 * n1); break;
@@ -576,7 +592,7 @@ function buildObjects(chunk) {
   const group = new THREE.Group();
   const rocks = [], trees = { fir: [], larch: [], birch: [], maple: [], maple2: [], bonsai: [], rhodo: [], shrub: [], dead: [] };
   const ccx = x0 + CHUNK / 2, ccz = z0 + CHUNK / 2;
-  const tries = Math.abs(ccz - routeZ(ccx)) < 220 ? 1400 : 450;
+  const tries = Math.abs(ccz - routeZ(ccx)) < 220 + openAt(ccx) * 260 ? 1400 : 450;
   for (let n = 0; n < tries; n++) {
     const x = x0 + rnd() * CHUNK, z = z0 + rnd() * CHUNK;
     const ti = terrainInfo(x, z);
@@ -588,7 +604,7 @@ function buildObjects(chunk) {
     const wi = nearestWaypoint(x); const wp = ROUTE[wi];
     const wd = Math.hypot(x - wp.x, z - routeZ(wp.x));
     if (wd < (wp.kind === 'village' ? 40 : 14)) continue;
-    let t = ti.type; if (ti.ad > 260) t = 'far';
+    let t = ti.type; if (ti.ad > 260 + openAt(x) * 260) t = 'far';
     // ---- 岩石 ----
     let rockP = 0, rmin = 0.5, rmax = 1.6;
     if (t === 'stone') { rockP = ti.ad < 45 ? 0.55 : 0.2; rmin = 0.6; rmax = 2.0; }
@@ -696,7 +712,7 @@ function buildGrass(chunk) {
     const isF = n >= want;
     const x = x0 + rnd() * CHUNK, z = z0 + rnd() * CHUNK;
     const ti = terrainInfo(x, z);
-    if (ti.ad > 200) continue;
+    if (ti.ad > 200 + openAt(x) * 220) continue;
     const t = ti.type;
     const r = rnd();
     let p = 0;

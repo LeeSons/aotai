@@ -93,7 +93,7 @@ export class UI {
       <div>Esc</div><div>暂停</div>
       <div>F9</div><div>（测试用）传送到下一个地标</div>
     </div>
-    <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时跟着红布条路标走；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>
+    <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时别离开脚下的路迹，看不清就原地等；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>
     <p class="muted">身体：吃饱后能走大半天才会饿，断粮会越来越虚但不会马上倒下；空肚子喝点水能稍微压一压饿。冷天水壶里的水接近冰点，猛灌会拉低核心体温——有炉子就烧热水喝。坐下休息能回一点精力；真正恢复要靠睡觉。生命在没有伤病、不太饿不太渴、身体不冷时会自己慢慢恢复：走路时约 +1/小时，坐下休息约 +2.5/小时，睡一觉约 +4/小时，吃饱喝足或刚吃过热食更快；急救包能处理擦伤（+15）。</p>`;
   }
 
@@ -369,7 +369,7 @@ export class UI {
     this.navAlong = along;
     $('hud-next').innerHTML = g.reached >= ROUTE.length - 1 ? '已抵达终点' : nav
       ? `下一站：${next.name} · <span class="dir">${arrow}</span> ${hasGPS ? '' : '约 '}${fmtDist(along)} · ${dAlt >= 0 ? '↑' : '↓'}${Math.abs(dAlt)} m`
-      : `下一站：${next.name}${inv.has('map') ? ' <span class="muted">（无路引，对照地图和路标）</span>' : ' <span class="muted">（无路引）</span>'}`;
+      : `下一站：${next.name}${inv.has('map') ? ' <span class="muted">（无路引，对照地图）</span>' : ' <span class="muted">（无路引）</span>'}`;
     if (nav) this.updateWaypointMarker(g, next, along, hasGPS); else $('wpmark').style.display = 'none';
 
     // 指标条

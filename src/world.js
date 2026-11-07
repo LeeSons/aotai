@@ -450,7 +450,6 @@ export class World {
     this.interactables = [];
     this.shelters = [];
     this.flags = [];
-    this.markers = [];
     this.waterState = {};
     this.npcs = [];
     this.rng = rng;
@@ -602,23 +601,6 @@ export class World {
       g.setIndex(idx); g.computeVertexNormals();
       const stream = new THREE.Mesh(g, frozen ? m.ice : waterMaterial(0x1a3a3a, 0.9));
       this.group.add(stream);
-    }
-
-    // 路标石堆 + 红布条
-    const rr = mulberry32(4242);
-    for (let x = 12; x < ROUTE_LENGTH - 10; x += 26 + rr() * 14) {
-      const wi = nearestWaypoint(x);
-      if (Math.abs(ROUTE[wi].x - x) < 14) continue;
-      const z = routeZ(x) + (rr() - 0.5) * 4;
-      const c = cairn(0.7 + rr() * 0.3);
-      this.place(c, x, z, 0, -0.1);
-      const stick = cyl(0.03, 0.03, 1.4, m.wood, 4); stick.position.set(x, heightAt(x, z) + 1.2, z); this.group.add(stick);
-      const rib = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.14), m.red);
-      rib.geometry.translate(0.35, 0, 0);
-      rib.position.set(x, heightAt(x, z) + 1.8, z);
-      this.group.add(rib);
-      this.flags.push(rib);
-      this.markers.push({ x, z });
     }
 
     // 废弃帐篷（遇难者遗物）

@@ -11,14 +11,15 @@ export const SEC_PER_GAME_HOUR = 60 / GAME_MIN_PER_SEC;
 
 // seg：从此地标到下一地标的地形类型
 // forest 林区爬升 / dead 火烧坡枯林 / meadow 高山草甸 / ridge 山脊 / cliff 悬崖窄脊 / stone 石海 / pillars 万仙阵石林 / gully 野沟
+// open：开阔台地程度（0–1）。盆景园、西塬、东塬这类地方宽得看不到边，人在上面几乎感觉不到左右坡度
 export const ROUTE = [
   { name: '塘口村', alt: 1750, seg: 'forest', len: 340, kind: 'village', water: 1, safe: true,
     desc: '秦岭北麓的小山村，鳌太穿越的起点。村口的牌子写着：“鳌太线严禁穿越”。' },
   { name: '火烧坡', alt: 2300, seg: 'dead', len: 320, kind: 'sign',
     desc: '多年前的一场山火留下满坡枯木，灰白的树干像墓碑一样立在陡坡上。' },
-  { name: '2900营地', alt: 2900, seg: 'meadow', len: 160, kind: 'camp', water: 0.8, camp: true,
+  { name: '2900营地', alt: 2900, seg: 'meadow', len: 220, open: 0.9, kind: 'camp', water: 0.8, camp: true,
     desc: '林线附近的平台，有一眼小泉水。很多人在这里度过穿越的第一夜。' },
-  { name: '盆景园', alt: 3150, seg: 'meadow', len: 150, kind: 'sign',
+  { name: '盆景园', alt: 3150, seg: 'meadow', len: 190, open: 1, kind: 'sign',
     desc: '被高山风雕琢得虬曲低矮的冷杉与杜鹃，宛如天然盆景。羚牛常在附近出没。' },
   { name: '白起庙', alt: 3300, seg: 'ridge', len: 160, kind: 'temple', shelter: true,
     desc: '一座低矮的石砌小庙，相传祭祀战国名将白起。庙里可以短暂避风。' },
@@ -39,11 +40,11 @@ export const ROUTE = [
   { name: '金字塔·塔1', alt: 3550, seg: 'stone', len: 90, kind: 'sign', minor: true, desc: '金字塔状的花岗岩峰，第一座。' },
   { name: '金字塔·塔2', alt: 3600, seg: 'stone', len: 90, kind: 'sign', minor: true, desc: '第二座金字塔，石块松动，小心落石。' },
   { name: '金字塔·塔3', alt: 3620, seg: 'stone', len: 200, kind: 'sign', minor: true, desc: '第三座金字塔，最高也最陡。' },
-  { name: '西塬', alt: 3500, seg: 'meadow', len: 230, kind: 'sign', camp: true,
+  { name: '西塬', alt: 3500, seg: 'meadow', len: 230, open: 1, kind: 'sign', camp: true,
     desc: '开阔的高山草甸台地。天好时一望无际，起雾时四面八方都长得一模一样。' },
   { name: '九重石海（太白梁）', alt: 3580, seg: 'stone', len: 320, kind: 'sign',
-    desc: '鳌太线最长、最耗体力的石海。九重乱石无边无际，没有路迹，只有偶尔一堆石头路标。' },
-  { name: '东塬', alt: 3520, seg: 'meadow', len: 220, kind: 'sign', camp: true,
+    desc: '鳌太线最长、最耗体力的石海。九重乱石无边无际，没有路迹，全凭方向感和地图。' },
+  { name: '东塬', alt: 3520, seg: 'meadow', len: 220, open: 1, kind: 'sign', camp: true,
     desc: '石海尽头的另一片高山台地，风很大。' },
   { name: '万仙阵', alt: 3560, seg: 'pillars', len: 200, kind: 'sign',
     desc: '成片的巨石林立如阵，传说姜子牙在此大摆万仙阵。雾中的石柱看起来像一个个人影。' },
@@ -55,7 +56,7 @@ export const ROUTE = [
     desc: '太白山最大的冰斗湖，湖边有一座石头房子，管理站和小卖部就在这里。' },
   { name: '拔仙台', alt: 3771, seg: 'ridge', len: 230, kind: 'summit',
     desc: '太白山主峰，海拔 3771.2 米，青藏高原以东的最高点。站在这里，整个秦岭都在脚下。' },
-  { name: '大文公庙', alt: 3550, seg: 'meadow', len: 260, kind: 'temple', shelter: true, camp: true, water: 0.6,
+  { name: '大文公庙', alt: 3550, seg: 'meadow', len: 260, open: 0.6, kind: 'temple', shelter: true, camp: true, water: 0.6,
     desc: '高山上的文公庙，有简易的庇护所。从这里开始一路下撤。' },
   { name: '放羊寺', alt: 3200, seg: 'forest', len: 260, kind: 'temple', shelter: true,
     desc: '林线下的小寺，四周是太白红杉林。' },
@@ -64,7 +65,7 @@ export const ROUTE = [
   { name: '平安寺', alt: 2750, seg: 'gully', len: 380, kind: 'temple', shelter: true, camp: true, water: 1, shop: true,
     desc: '有僧人常住的寺院，可以讨一碗热水。名字很吉利，但下山的路还很长。' },
   { name: '羊皮沟', alt: 2050, seg: 'forest', len: 520, kind: 'sign', water: 1,
-    desc: '灌木茂密、湿滑的下撤沟谷。很多迷路事故都发生在附近的无名野沟里——只沿着溪流和路标走。' },
+    desc: '灌木茂密、湿滑的下撤沟谷。很多迷路事故都发生在附近的无名野沟里——只沿着溪流走。' },
   { name: '鹦鸽镇', alt: 1000, seg: 'forest', len: 0, kind: 'village', water: 1, safe: true, end: true,
     desc: '终点。炊烟、狗叫、柏油路——你回到了人间。' },
 ];

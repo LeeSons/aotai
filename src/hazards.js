@@ -240,11 +240,11 @@ function phantomFigure() {
   const pk = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.55, 0.22), mat); pk.position.set(0, 1.3, -0.2); g.add(pk);
   return g;
 }
-function phantomMarker() {
+// 雾里一顶亮着灯的帐篷（幻觉）
+function phantomTent() {
   const g = new THREE.Group();
-  const st = new THREE.Mesh(new THREE.DodecahedronGeometry(0.45, 0), new THREE.MeshStandardMaterial({ color: 0x5e5a54, flatShading: true })); st.position.y = 0.3; g.add(st);
-  const rib = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.14), new THREE.MeshStandardMaterial({ color: 0xc0201a, emissive: 0x400505, side: THREE.DoubleSide })); rib.position.set(0.35, 1.6, 0); g.add(rib);
-  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 4), new THREE.MeshStandardMaterial({ color: 0x5a3c22 })); stick.position.y = 1.0; g.add(stick);
+  const t = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1.3, 4), new THREE.MeshBasicMaterial({ color: 0xffa64a, transparent: true, opacity: 0.85 }));
+  t.rotation.y = Math.PI / 4; t.scale.z = 1.5; t.position.y = 0.65; g.add(t);
   return g;
 }
 
@@ -438,7 +438,7 @@ export class Hazards {
         const fwd = new THREE.Vector3(Math.cos(pl.camYaw), 0, Math.sin(pl.camYaw));
         const side = new THREE.Vector3(-fwd.z, 0, fwd.x).multiplyScalar((this.rng() > 0.5 ? 1 : -1) * (10 + this.rng() * 14));
         const pos = P.clone().addScaledVector(fwd, 18 + this.rng() * 10).add(side);
-        const mesh = fig ? phantomFigure() : phantomMarker();
+        const mesh = fig ? phantomFigure() : phantomTent();
         mesh.position.set(pos.x, heightAt(pos.x, pos.z), pos.z);
         this.scene.add(mesh);
         this.phantoms.push({ mesh, t: 14, fig });
@@ -451,7 +451,7 @@ export class Hazards {
       if (ph.fig) ph.mesh.lookAt(P.x, ph.mesh.position.y, P.z);
       if (d < 7 || ph.t <= 0) {
         this.scene.remove(ph.mesh);
-        if (d < 7) { surv.mental = Math.max(0, surv.mental - 5); game.msg(ph.fig ? '你追上去想喊住那个人影……可那里什么都没有。只有风。' : '你走近那根红布条……它消失了。你根本不确定自己刚才看到了什么。', 'warn'); }
+        if (d < 7) { surv.mental = Math.max(0, surv.mental - 5); game.msg(ph.fig ? '你追上去想喊住那个人影……可那里什么都没有。只有风。' : '你朝那顶亮着灯的帐篷走过去……它消失了。你根本不确定自己刚才看到了什么。', 'warn'); }
         return false;
       }
       return true;
