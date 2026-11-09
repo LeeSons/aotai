@@ -8,7 +8,9 @@ export const SPEED = { walk: 3.3, run: 7.0, crouch: 1.6, prone: 0.7 };
 const GRAVITY = 22;
 // 无敌模式：快跑 10 m/s；起跳初速 √(2gh) → 跳起 2 米
 const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
-export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷' };
+// 无敌模式：长按空格（超过 0.25 秒）踏空飞行，向上 6 m/s；最高离地 150 米，松开就落下
+const FLY_HOLD = 0.25, FLY_UP = 6, FLY_MAX = 150;
+export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷', fly: '踏空飞行' };
 
 function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
@@ -55,6 +57,7 @@ export class Player {
   get prone() { return this.stance === 'prone'; }
   stanceLabel() {
     if (this.coma) return STANCE_NAME.coma;
+    if (this.flying) return STANCE_NAME.fly;
     if (this.ko > 0) return STANCE_NAME.ko;
     if (this.warming) return STANCE_NAME.warm;
     if (this.sliding) return STANCE_NAME.slide;
@@ -293,7 +296,7 @@ export class Player {
       } else if (this.slideSpeed < 0.5 && n.y > slideNY - 0.08) { this.sliding = false; this.slideSpeed = 0; }
     } else {
       const target = wish.clone().multiplyScalar(locked ? 0 : speed);
-      const acc = this.onGround ? (this.stance === 'prone' ? 6 : 11) : 1.5;
+      const acc = this.onGround ? (this.stance === 'prone' ? 6 : 11) : mods.god ? 6 : 1.5;   // 无敌模式在空中也能自如转向
       this.vel.x = lerp(this.vel.x, target.x, 1 - Math.exp(-acc * dt));
       this.vel.z = lerp(this.vel.z, target.z, 1 - Math.exp(-acc * dt));
     }
@@ -305,6 +308,15 @@ export class Player {
     if (input.jump && !locked) {
       if (this.stance !== 'stand') { this.setStance('stand'); }
       else if (this.onGround && !this.sliding && mods.canJump) { this.vel.y = mods.god ? GOD_JUMP_V : 6.0; this.onGround = false; this.airborneFrom = p.y; this.events.push({ type: 'jump' }); }
+    }
+    // 无敌模式：长按空格踏空飞行（短按仍是普通的 2 米跳）
+    this.jumpHoldT = input.jumpHold && !locked ? (this.jumpHoldT || 0) + dt : 0;
+    this.flying = !!mods.god && this.jumpHoldT > FLY_HOLD && this.stance === 'stand';
+    if (this.flying) {
+      if (this.onGround) { this.onGround = false; this.airborneFrom = p.y; }
+      this.sliding = false; this.slideSpeed = 0;
+      const target = p.y - gNow.y < FLY_MAX ? FLY_UP : 0;
+      if (this.vel.y < target) this.vel.y = Math.min(target, this.vel.y + (GRAVITY + 28) * dt);
     }
 
     // ------- 水平移动 + 台阶 -------
@@ -318,7 +330,7 @@ export class Player {
     };
     const dx = this.vel.x * dt, dz = this.vel.z * dt;
     if (!tryMove(dx, dz)) { if (!tryMove(dx, 0)) this.vel.x = 0; if (!tryMove(0, dz)) this.vel.z = 0; }
-    const tc = treeCollide(p.x, p.z, 0.35);
+    const tc = this.onGround || p.y - gNow.y < 4 ? treeCollide(p.x, p.z, 0.35) : null;   // 飞在树梢以上不会撞树
     if (tc) { p.x = tc.x; p.z = tc.z; }
 
     // ------- 竖直 -------

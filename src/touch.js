@@ -31,7 +31,7 @@ const key = (code, type = 'keydown') => window.dispatchEvent(new KeyboardEvent(t
 const tap = (code) => { key(code); key(code, 'keyup'); };
 
 const ACT = [
-  { id: 'jump', lb: '跳', cp: '跳跃', down: () => key('Space') }, // 跳跃键按下即可，游戏每帧会自己清掉
+  { id: 'jump', lb: '跳', cp: '跳跃', hold: 'Space' }, // 按下即跳；按住不放（无敌模式）踏空飞行，松开发 keyup
   { id: 'sprint', lb: '跑', cp: '快跑', down: (t) => t.toggleSprint() },
   { id: 'crouch', lb: '蹲', cp: '蹲下', down: () => tap('KeyC') },
   { id: 'prone', lb: '趴', cp: '趴下', down: () => tap('KeyZ') },
@@ -158,7 +158,7 @@ export class TouchControls {
       return `<div class="keys-table">
         <div>左侧摇杆</div><div>移动。推得越远走得越快；按住屏幕左半边任意位置都能拉出摇杆</div>
         <div>右侧滑动</div><div>转动视角；双指捏合 / 张开调整第三人称距离</div>
-        <div>跳</div><div>跳跃 / 起身。脚下打滑时（QTE）点击屏幕任意处稳住</div>
+        <div>跳</div><div>跳跃 / 起身。脚下打滑时（QTE）点击屏幕任意处稳住。无敌模式下长按踏空飞行</div>
         <div>跑</div><div>快跑开关（消耗大量体力；松开摇杆自动停下）</div>
         <div>蹲 / 趴</div><div>蹲下抵御阵风、石海更稳；趴下在狂风中最稳；打雷时要蹲，别趴</div>
         <div>互动</div><div>靠近水源、路牌、驴友、补给点时，画面下方会出现互动按钮；野外下雨、有积雪或雨后有水洼时，会出现“就地取水”（接雨水 / 融雪 / 舀积水）</div>
