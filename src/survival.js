@@ -110,11 +110,20 @@ export class Survival {
   }
   restore(s) { Object.assign(this, s); this.status = JSON.parse(JSON.stringify(s.status)); this.stats = { ...s.stats }; this.cause = ''; }
 
-  addStatus(k, data) { this.status[k] = { ...(this.status[k] || {}), ...data }; }
+  // 无敌模式下伤病一律不上身；返回是否真的加上了
+  addStatus(k, data) { if (this.god && STATUS[k] && STATUS[k].bad) return false; this.status[k] = { ...(this.status[k] || {}), ...data }; return true; }
   hasStatus(k) { return !!this.status[k]; }
   clearStatus(k) { delete this.status[k]; }
 
-  damage(v, cause) { this.health -= v; if (this.health <= 0) this.cause = cause; this.lastHitCause = cause; }
+  damage(v, cause) { if (this.god) return; this.health -= v; if (this.health <= 0) this.cause = cause; this.lastHitCause = cause; }
+
+  // 无敌模式：所有指标拉满，伤病清空
+  fill() {
+    this.health = 100; this.energy = 100; this.satiety = 100; this.hydration = 100; this.stamina = 100;
+    this.core = 37; this.wet = 0; this.mental = 100; this.altSick = 0; this.snowExposure = 0;
+    this.exhausted = false; this.coma = false; this.cause = '';
+    for (const k in this.status) if (STATUS[k] && STATUS[k].bad) delete this.status[k];
+  }
 
   loadFactor() {
     const bp = this.inv.backpack;
@@ -396,6 +405,7 @@ export class Survival {
       if (off) { this.inv.worn.delete(off); hooks.msg(`你突然感到浑身燥热……不知不觉脱下了${ITEMS[off].name}。（反常脱衣：重度失温的致命征兆）`, 'danger'); hooks.gearChanged && hooks.gearChanged(); }
     }
     if (this.core > 34) this.paradoxDone = false;
+    if (this.god) this.fill();
   }
 
   // 喝水能暂时压一压饥饿感（“水饱”），但只能顶一点点：0.25 L ≈ 2.5 点饱食度，
@@ -456,6 +466,7 @@ export class Survival {
   // 状态标签（显示在 HUD）
   labels() {
     const out = [];
+    if (this.god) out.push(['无敌模式', 'good', '所有指标锁满，不会受伤生病；快跑 10 米/秒，能跳 2 米高。暂停菜单里可以关闭。']);
     const c = this.core;
     if (this.coma) out.push(['昏迷', 'crit']);
     if (c < 32) out.push(['重度失温', 'crit']); else if (c < 34) out.push(['中度失温', 'crit']); else if (c < 35) out.push(['轻度失温', 'bad']); else if (c < 36) out.push(['寒战', 'warn']);

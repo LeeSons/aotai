@@ -5,6 +5,9 @@ import { clamp, lerp } from './noise.js';
 
 // 速度（游戏单位/秒）
 export const SPEED = { walk: 3.3, run: 7.0, crouch: 1.6, prone: 0.7 };
+const GRAVITY = 22;
+// 无敌模式：快跑 10 m/s；起跳初速 √(2gh) → 跳起 2 米
+const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
 export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷' };
 
 function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
@@ -250,8 +253,9 @@ export class Player {
     // 快跑会让人站起来
     if (input.sprint && wantMove && this.stance === 'crouch' && mods.canSprint) this.setStance('stand');
     this.sprinting = input.sprint && wantMove && mods.canSprint && this.stance === 'stand' && !this.sliding && fwdIn && !locked;
-    const base = this.sprinting ? SPEED.run : this.stance === 'crouch' ? SPEED.crouch : this.stance === 'prone' ? SPEED.prone : SPEED.walk;
-    let speed = base * mods.speedMult * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
+    // 无敌模式：快跑 10 m/s，不受负重、地形、坡度拖慢
+    const base = this.sprinting ? (mods.god ? GOD_RUN : SPEED.run) : this.stance === 'crouch' ? SPEED.crouch : this.stance === 'prone' ? SPEED.prone : SPEED.walk;
+    let speed = base * (mods.god ? 1 : mods.speedMult) * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
     if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
 
@@ -262,8 +266,10 @@ export class Player {
     if (wantMove) {
       const ah = groundAt(p.x + wish.x * 1.2, p.z + wish.z * 1.2).y;
       uphill = (ah - gNow.y) / 1.2;
-      speed *= clamp(1 - Math.max(uphill, 0) * (this.polesOut ? 0.45 : 0.55), 0.4, 1) * (uphill < -0.15 ? 1.04 : 1);
-      if (mods.stone && !this.sprinting) speed *= this.polesOut ? 0.8 : 0.7;
+      if (!mods.god) {
+        speed *= clamp(1 - Math.max(uphill, 0) * (this.polesOut ? 0.45 : 0.55), 0.4, 1) * (uphill < -0.15 ? 1.04 : 1);
+        if (mods.stone && !this.sprinting) speed *= this.polesOut ? 0.8 : 0.7;
+      }
     }
     this.uphill = uphill;
 
@@ -298,7 +304,7 @@ export class Player {
     // 跳跃 / 起身
     if (input.jump && !locked) {
       if (this.stance !== 'stand') { this.setStance('stand'); }
-      else if (this.onGround && !this.sliding && mods.canJump) { this.vel.y = 6.0; this.onGround = false; this.airborneFrom = p.y; this.events.push({ type: 'jump' }); }
+      else if (this.onGround && !this.sliding && mods.canJump) { this.vel.y = mods.god ? GOD_JUMP_V : 6.0; this.onGround = false; this.airborneFrom = p.y; this.events.push({ type: 'jump' }); }
     }
 
     // ------- 水平移动 + 台阶 -------
@@ -328,8 +334,8 @@ export class Player {
       }
     }
     if (!this.onGround) {
-      this.vel.y -= 22 * dt;
-      p.y += this.vel.y * dt;
+      this.vel.y -= GRAVITY * dt;
+      p.y += (this.vel.y + 0.5 * GRAVITY * dt) * dt;   // 匀加速的精确积分，跳跃高度不随帧率变化
       if (p.y <= g.y) {
         const impact = -this.vel.y;
         p.y = g.y; this.onGround = true;

@@ -168,7 +168,7 @@ export class TouchControls {
         <div>休息 / 扎营</div><div>原地坐下恢复体力 / 搭帐篷睡觉、露宿、休息一小时，带了打火机可以捡柴生火</div>
         <div>喷雾</div><div>对冲过来的羚牛使用防兽喷雾</div>
         <div>更多</div><div>切换第一 / 第三人称、开关小地图、全屏</div>
-        <div>背包 / 地图 / Ⅱ</div><div>吃喝穿衣用药求救 / 全线地图与海拔剖面 / 暂停（都会暂停时间）</div>
+        <div>背包 / 地图 / Ⅱ</div><div>吃喝穿衣用药求救 / 全线地图与海拔剖面 / 暂停（都会暂停时间；画质、无敌模式在暂停里）</div>
       </div>${tips}`;
     };
     const qte = g.startQTE.bind(g);

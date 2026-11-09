@@ -97,6 +97,8 @@ class Game {
     const R = this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
     // 画质：手机默认「均衡」、电脑默认「高清」，可在标题画面 / 暂停菜单里切换
     this.gfxKey = loadGfx();
+    // 无敌模式：在暂停菜单里开关，设置会记住
+    try { this.god = localStorage.getItem('aotai_god') === '1'; } catch (e) { this.god = false; }
     const GR = gfxRange(this.gfxKey);
     this.perf = { acc: 0, n: 0, max: GR.max, min: GR.min, pr: GR.start };
     R.setPixelRatio(GR.start);
@@ -246,6 +248,8 @@ class Game {
     }
     this.inv = new Inventory();
     this.surv = new Survival(this.inv);
+    this.surv.god = this.god;
+    this.godUsed = false;
     this.reached = 0;
     this.track = []; this.trackAll = [];
     this.dangerCount = 0;
@@ -481,6 +485,18 @@ class Game {
     this.resize();
   }
 
+  setGod(on) {
+    this.god = !!on;
+    try { localStorage.setItem('aotai_god', this.god ? '1' : '0'); } catch (e) { /* */ }
+    const s = this.surv;
+    if (!s) return;
+    s.god = this.god;
+    if (this.god) {
+      s.fill();
+    }
+    if (this.state === 'play') this.msg(this.god ? '无敌模式已开启：所有指标锁满，不会受伤生病。按住快跑 10 米/秒，能跳 2 米高。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+  }
+
   gfxMenu(back) {
     document.exitPointerLock && document.exitPointerLock();
     const dpr = window.devicePixelRatio || 1;
@@ -497,6 +513,7 @@ class Game {
       { label: '继续' },
       { label: '操作说明', action: () => setTimeout(() => this.ui.modal('操作说明', this.ui.helpHTML()), 0) },
       { label: `画质：${GFX[this.gfxKey].name}`, action: () => setTimeout(() => this.gfxMenu(() => this.pauseMenu()), 0) },
+      { label: `无敌模式：${this.god ? '开' : '关'}`, cls: this.god ? 'on' : '', action: () => { this.setGod(!this.god); setTimeout(() => this.pauseMenu(), 0); } },
       { label: this.audio.master && this.audio.master.gain.value > 0 ? '静音' : '开启声音', action: () => { if (this.audio.master) this.audio.setMaster(this.audio.master.gain.value > 0 ? 0 : 0.8); } },
       { label: '返回标题', cls: 'danger', action: () => this.toTitle() },
     ]);
@@ -760,6 +777,8 @@ class Game {
     const paused = this.anyUI();
     if (paused) { this.updateLighting(); return; }
     const s = this.surv, inv = this.inv, pl = this.player;
+    s.god = this.god;
+    if (this.god) this.godUsed = true;
     // QTE 子弹时间
     let sdt = dt;
     if (this.qte) {
@@ -803,7 +822,7 @@ class Game {
     if (lostSense) this.tip('ghostwall', '浓雾里四周一模一样……你总觉得自己在绕圈子。没有指北针，方向感会慢慢偏移（鬼打墙）。');
     const mods = {
       drift: ghost, coma: s.coma, shiver: s.coma ? 0 : clamp((36.2 - s.core) / 1.5, 0, 1), tired: s.stamina < 18 && !pl.moving ? 1 : 0, load: clamp(inv.weight() / 30, 0, 1.2),
-      locked: this.sleeping, speedMult: s.speedMult(env), canSprint: s.canSprint(), canJump: s.stamina > 8 && !s.status.fracture,
+      locked: this.sleeping, speedMult: s.speedMult(env), canSprint: this.god || s.canSprint(), canJump: this.god || (s.stamina > 8 && !s.status.fracture), god: this.god,
       slideNY: (this.ti.ad < 9 ? 0.6 : 0.745) + (this.snowLocal > 0.35 && !inv.has('cramp') ? 0.08 : 0) + (this.weather.wetGround > 0.5 ? 0.03 : 0), stone: env.stone || ['stone', 'pillars'].includes(this.ti.type),
       poles: pl.polesOut, lean: 0, sway: coldSway,
     };
@@ -912,8 +931,9 @@ class Game {
       } else if (ev.type === 'slideStart') {
         if (!this._slideMsgT || this.time - this._slideMsgT > 6) { this._slideMsgT = this.time; this.msg('脚下一滑——你正顺着陡坡向下滑坠！按住 C 尝试制动！', 'crit'); this.dangerCount++; }
       } else if (ev.type === 'land') {
-        if (ev.speed > 7) this.audio.impact(Math.min(0.8, ev.speed / 20));
+        if (ev.speed > (this.god ? 10.5 : 7)) this.audio.impact(Math.min(0.8, ev.speed / 20));
       } else if (ev.type === 'impact') {
+        if (this.god) { this.audio.impact(0.5); continue; }   // 无敌：摔多狠都没事
         const sp = ev.speed;
         const cliff = this.ti && (this.ti.type === 'cliff' || this.ti.ad > 30);
         const cause = sp > 26 ? '坠崖' : '滑坠摔伤';
@@ -1036,7 +1056,7 @@ class Game {
     const fill = s.drinkFill(a);
     this.audio.drink();
     if (raw > 0.05 && !s.status.diarrhea && Math.random() < raw * 0.45 * this.diff.hazard) {
-      setTimeout(() => { if (this.state === 'play') { s.addStatus('diarrhea', { t: 150 }); this.msg('肚子一阵绞痛……喝下去的生水不干净，你开始急性腹泻！', 'crit'); } }, 6000);
+      setTimeout(() => { if (this.state === 'play' && s.addStatus('diarrhea', { t: 150 })) this.msg('肚子一阵绞痛……喝下去的生水不干净，你开始急性腹泻！', 'crit'); }, 6000);
     }
     const left = `你喝了 ${fmt(a, 2)} L 水。剩余 ${fmt(inv.water, 2)} L。`;
     if (tw < 8 && chill >= 0.08) {
@@ -1202,7 +1222,7 @@ class Game {
     const ti = this.ti || {};
     if (o.wet > 0.15 || o.wind <= 5 || !['forest', 'dead', 'meadow', 'gully'].includes(ti.type)) return '';
     if (Math.random() > 0.1 + (o.wind - 5) * 0.04) return '';
-    const s = this.surv; s.damage(3, '扑救山火时烧伤'); s.mental = Math.max(0, s.mental - 10); this.dangerCount++;
+    const s = this.surv; s.damage(3, '扑救山火时烧伤'); if (!this.god) s.mental = Math.max(0, s.mental - 10); this.dangerCount++;
     this.gameMin += 20; this.clearFire();
     return '<p style="color:#e0483c">一阵风把火星卷进了旁边的枯草里，火苗“呼”地蹿起半人高！你脱下外套拼命扑打，又捧土压了好一阵，才把它扑灭。手上燎起了几个水泡，火堆也被你踩散了。</p><p class="muted">干燥的大风天生火，火星很容易引燃枯草——这正是现实中禁止野外用火的原因。</p>';
   }
@@ -1474,7 +1494,7 @@ class Game {
     this.gameMin += 10;
     if (inv.waterCap <= 0) {
       this.drinkDirect(0.3, clamp(this.airTemp, 0.5, 20)); this.audio.drink();
-      if (Math.random() < 0.5 * this.diff.hazard) setTimeout(() => { if (this.state === 'play') { s.addStatus('diarrhea', { t: 150 }); this.msg('水洼里的脏水让你开始腹泻！', 'crit'); } }, 6000);
+      if (Math.random() < 0.5 * this.diff.hazard) setTimeout(() => { if (this.state === 'play' && s.addStatus('diarrhea', { t: 150 })) this.msg('水洼里的脏水让你开始腹泻！', 'crit'); }, 6000);
       this.msg('你趴在水洼边喝了几口浑水。', 'warn'); return;
     }
     const add = inv.waterCap - inv.water;
@@ -1840,8 +1860,10 @@ class Game {
   victory() {
     this.state = 'end';
     document.exitPointerLock && document.exitPointerLock();
-    let wins = this.wins() + 1;
-    try { localStorage.removeItem('aotai_save'); localStorage.setItem('aotai_wins', String(wins)); } catch (e) { /* */ }
+    // 开着无敌走完的不计入通关次数（不然初始资金能随便刷）
+    const godRun = this.god || this.godUsed;
+    let wins = this.wins() + (godRun ? 0 : 1);
+    try { localStorage.removeItem('aotai_save'); if (!godRun) localStorage.setItem('aotai_wins', String(wins)); } catch (e) { /* */ }
     const nextMoney = moneyForWins(wins);
     const s = this.surv;
     const score = this.dangerCount;
@@ -1852,7 +1874,7 @@ class Game {
       this.ui.showEnd({
         kicker: '你 活 着 走 了 出 来', title: '生 还', color: '#d8b46a', cause: `评价：${rating}`,
         stats: this.statsList(),
-        text: `<p>炊烟、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊隐没在翻滚的云层里，像从来没有存在过。</p>${incub}<p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p><p class="muted">你很幸运。现实中的鳌太线自 2018 年起已被禁止穿越，请不要以身犯险。</p>`,
+        text: `<p>炊烟、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊隐没在翻滚的云层里，像从来没有存在过。</p>${incub}${godRun ? `<p style="color:#d8b46a">这次开了无敌模式，不计入通关次数（已真正通关 ${wins} 次）。下一次出发的初始资金：¥${nextMoney}</p>` : `<p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p>`}<p class="muted">你很幸运。现实中的鳌太线自 2018 年起已被禁止穿越，请不要以身犯险。</p>`,
         buttons: [{ label: '再走一次', big: true, action: () => { this.ui.hide('screen-end'); this.state = 'title'; this.toSeason(); } }, { label: '返回标题', action: () => this.toTitle() }],
       });
     }, 4000);

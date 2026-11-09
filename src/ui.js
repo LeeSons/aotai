@@ -90,7 +90,7 @@ export class UI {
       <div>F</div><div>开关头灯</div>
       <div>G</div><div>开关小地图（需要 GPS 或手机离线轨迹）</div>
       <div>Q</div><div>使用防兽喷雾</div>
-      <div>Esc</div><div>暂停</div>
+      <div>Esc</div><div>暂停（画质、无敌模式也在这里）</div>
       <div>F9</div><div>（测试用）传送到下一个地标</div>
     </div>
     <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时别离开脚下的路迹，看不清就原地等；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>

@@ -117,7 +117,10 @@ class Takin {
         this.heading = lerpAngle(this.heading, this.chargeDir, dt * 5);
         this.chargeDir = lerpAngle(this.chargeDir, toP, dt * 0.45);
         targetSpeed = 14;
-        if (dist < 2.2 && !this.hit) {
+        if (dist < 2.2 && !this.hit && game.god) {
+          this.hit = true; game.audio.impact(0.5);
+          game.msg('羚牛一头撞在你身上，像撞上了一块石头——你纹丝未动。（无敌模式）', 'info');
+        } else if (dist < 2.2 && !this.hit) {
           this.hit = true;
           const dmg = 34 + this.rng() * 32;
           game.surv.damage(dmg, '被羚牛顶撞');
@@ -185,7 +188,8 @@ class Snake {
     if (d < 1.3) {
       this.done = true;
       const chance = game.inv.has('gaiter') ? 0.35 : 0.9;
-      if (Math.random() < chance) {
+      if (game.god) game.msg('蛇在你小腿上咬了一口，连个牙印都没留下。（无敌模式）', 'info');
+      else if (Math.random() < chance) {
         game.surv.damage(14, '蛇毒'); game.surv.addStatus('poison', { t: 120 }); game.hurt(0.5);
         game.msg('你的小腿被蛇咬了一口！伤口火辣辣地疼——尽快用急救包处理！', 'crit');
       } else game.msg('蛇咬在了绑腿上，没有咬穿。好险！', 'info');
@@ -214,7 +218,10 @@ class RollingRock {
     const P = game.player.pos;
     const d = Math.hypot(P.x - this.p.x, P.y + 0.9 - this.p.y, P.z - this.p.z);
     const sp = this.v.length();
-    if (!this.hit && d < this.r + 0.55 && sp > 3) {
+    if (!this.hit && d < this.r + 0.55 && sp > 3 && game.god) {
+      this.hit = true; game.audio.impact(0.5);
+      game.msg('一块落石砸在你身上弹开了，你毫发无伤。（无敌模式）', 'info');
+    } else if (!this.hit && d < this.r + 0.55 && sp > 3) {
       this.hit = true;
       const dmg = clamp(sp * 2.4 * this.r, 14, 75);
       game.surv.damage(dmg, '被落石砸中');
@@ -331,7 +338,7 @@ export class Hazards {
       if (G.t <= 0) {
         G.state = 'gust'; G.t = 1.5 + this.rng() * 1.3;
         // 站着硬抗可能被吹倒
-        if (wl >= 6.5 && pl.stance === 'stand' && pl.ko <= 0) {
+        if (wl >= 6.5 && pl.stance === 'stand' && pl.ko <= 0 && !game.god) {
           const ch = 0.3 * H * clamp((wl - 6) / 4, 0, 1.2) * (pl.polesOut ? 0.4 : 1) * (surv.exhausted ? 1.6 : 1) * (pl.sprinting ? 1.5 : 1);
           if (this.rng() < ch) {
             pl.knockDown(1.6); pl.push.x += G.dir.x * G.mag * 1.5; pl.push.z += G.dir.y * G.mag * 1.5;
@@ -368,7 +375,7 @@ export class Hazards {
       S.state = 'idle'; S.t = 16 + this.rng() * 18;
       // 蹲着（双脚并拢）最安全：人最矮、和地面只有两脚一个接触点；趴着虽矮，但地面电流会从头到脚流过全身
       const base = game.shelterNow ? 0 : pl.stance === 'crouch' ? 0.07 : pl.stance === 'prone' ? 0.16 : 0.4;
-      const chance = base * H * (pl.polesOut ? 1.2 : 1);
+      const chance = game.god ? 0 : base * H * (pl.polesOut ? 1.2 : 1);
       game.weather.flash = 2; game.weather.spawnBolt(new THREE.Vector3(P.x + (this.rng() - 0.5) * 30, 0, P.z + (this.rng() - 0.5) * 30), P.y);
       game.audio.thunder(30);
       if (this.rng() < chance) {
@@ -385,7 +392,7 @@ export class Hazards {
     const frost = (hour > 3.5 && hour < 9.5) && alt > 3150 && game.airTemp < 1.5;
     if (frost && !this.frostMsg && pl.onRock) { this.frostMsg = true; game.msg('清晨的岩石表面结了一层薄薄的霜，脚下像抹了油。', 'warn'); }
     if (!frost) this.frostMsg = false;
-    if (!game.qte && this.qteCool <= 0 && pl.moving && pl.onGround && pl.ko <= 0 && !pl.sliding) {
+    if (!game.qte && !game.god && this.qteCool <= 0 && pl.moving && pl.onGround && pl.ko <= 0 && !pl.sliding) {
       const stanceQ = pl.stance === 'prone' ? 0.05 : pl.stance === 'crouch' ? 0.4 : 1;
       const poleQ = pl.polesOut ? 0.45 : 1;
       const bootQ = inv.has('boots') ? 0.55 : 1.35;
