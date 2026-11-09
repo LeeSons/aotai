@@ -176,6 +176,7 @@ export const ITEMS = {
   thermos:{ name: '保温壶(1L)', cat: 'cook', price: 159, weight: 0.45, desc: '不锈钢真空保温壶。出发时在村里灌满开水，冷天里 6 小时后还有 60℃ 左右，一整天都是温的；路上随时能喝口热水，还能直接泡热食，不用点炉子。用炉子烧开水可以再灌满。' },
   lighter:{ name: '打火机', cat: 'cook', price: 5, weight: 0.02, desc: '在山上捡柴生火（扎营菜单 T）：烤火取暖、烤干衣服；有锅还能融雪、烧水、煮东西，不费燃气。林子里柴多，林线以上只有零星的灌木枯枝，石海和山脊上几乎找不到能烧的。雨天、积雪、大风都很难点着；零下太冷时丁烷打火机也不好打。（现实中秦岭保护区全年严禁野外用火。）' },
   tinder: { name: '引火块(10块)', cat: 'cook', price: 25, weight: 0.08, stack: true, max: 3, desc: '固体酒精引火块。潮湿和大风里也能把火引着，大大提高生火成功率。每次生火用一块。' },
+  basin:  { name: '折叠水盆', cat: 'cook', price: 39, weight: 0.25, desc: '硅胶折叠盆，装得下 5 L。有火（火堆或炉子）就能烧一盆热水泡脚：泡二十多分钟，热量顺着脚上的血流进身体，核心体温能回升半度左右，晚上也更容易睡着。雪水、溪水、水洼里的生水都能用，不用费饮用水。' },
   cup:    { name: '钛杯(带盖)', cat: 'cook', price: 69, weight: 0.1, desc: '能直接架在火上烧水、融雪、煮东西。带了炉头的话，炉头的套锅也行。' },
   stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气）。一罐气约能融 6 锅雪（每锅 1.2 L），或烧 60 杯热水。热食热水提振精神；还能融雪取水、煮沸生水。' },
   gas:    { name: '备用气罐', cat: 'cook', price: 39, weight: 0.3, stack: true, max: 5, desc: '每罐约能融 6 锅雪，或烧 60 杯热水。' },
@@ -220,7 +221,7 @@ export const RECOMMENDED = [
   ['bottle', 4], ['lamp', 1], ['firstaid', 1], ['compass', 1], ['app', 1], ['poles', 1], ['map', 1], ['stove', 1], ['lighter', 1], ['tablet', 1], ['bandage', 1],
   ['meal', 8], ['biscuit', 6], ['choco', 5], ['bar', 6], ['jerky', 3],
   ['down', 1], ['diamox', 1], ['deet', 1], ['blanket', 1], ['thermos', 1], ['warmer', 1], ['gaiter', 1], ['elec', 2],
-  ['spray', 1], ['ibu', 1], ['smecta', 1], ['glasses', 1], ['gas', 1], ['cramp', 1], ['gps', 1], ['power', 1], ['noodle', 4],
+  ['spray', 1], ['ibu', 1], ['smecta', 1], ['glasses', 1], ['gas', 1], ['cramp', 1], ['gps', 1], ['power', 1], ['noodle', 4], ['basin', 1],
 ];
 
 // 补给点（剩余资金可购买）

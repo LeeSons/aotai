@@ -83,6 +83,7 @@ export const STATUS = {
   blanket:  { name: '保温毯', bad: false, desc: '裹着保温毯，热量流失大幅减少。' },
   ibu:      { name: '布洛芬', bad: false, desc: '止痛中，伤痛与头痛的影响减轻。' },
   elec:     { name: '电解质', bad: false, desc: '电解质平衡，水分和精力消耗减缓。' },
+  footbath: { name: '脚暖', bad: false, desc: '刚用热水泡过脚，脚是暖的，睡得也更香。' },
   hotmeal:  { name: '饱暖', bad: false, desc: '刚吃了热食 / 喝了热水，从里往外暖和。' },
 };
 

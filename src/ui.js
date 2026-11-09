@@ -620,6 +620,7 @@ export class UI {
         if (id === 'elec') btns.push(['冲一杯', () => g.useItem(id), inv.water < 0.4]);
         if (['firstaid', 'bandage', 'ibu', 'diamox', 'smecta', 'warmer', 'blanket', 'power', 'deet'].includes(id) && id !== 'deet') btns.push(['使用', () => g.useItem(id)]);
         if (id === 'spray') btns.push(['喷射', () => g.useSpray()]);
+        if (id === 'basin') btns.push(['烧水泡脚…', () => { this.hide('screen-inv'); g.footSoakMenu(); }]);
         if (id === 'sat') btns.push(['发送 SOS', () => g.sendSOS()]);
         card(id, it.kcal ? `<span>${it.kcal}kcal</span>` : '', btns);
       }

@@ -1269,7 +1269,8 @@ class Game {
     const inv = this.inv, s = this.surv, pot = this.hasPot(), f = this.fire;
     const again = (fn) => () => { fn(); if (this.nearFire()) setTimeout(() => this.fireMenu(), 60); };
     const btns = [];
-    btns.push({ label: '烤火 1 小时', action: () => this.skipTime(1, 'rest', { title: '烤火', step: () => {}, done: () => `<p>你凑在火边烤了一个小时。前胸烤得发烫，冻僵的手脚慢慢缓了过来${s.wet > 2 ? `，衣服还有 ${Math.round(s.wet)}% 潮` : '，衣服也烤干了'}。核心体温 ${fmt(s.core, 1)}℃。</p>` }) });
+    if (inv.has('basin')) btns.push({ label: '烧水泡脚…', action: () => this.footSoakMenu() });
+    btns.push({ label: '烤火 1 小时', action: () => this.skipTime(1, 'rest', { title: '烤火', warm: true, step: () => {}, done: () => `<p>你凑在火边烤了一个小时。前胸烤得发烫，冻僵的手脚慢慢缓了过来${s.wet > 2 ? `，衣服还有 ${Math.round(s.wet)}% 潮` : '，衣服也烤干了'}。核心体温 ${fmt(s.core, 1)}℃。</p>` }) });
     if (pot) {
       btns.push({ label: '喝杯热水（10 分钟）', disabled: inv.water < 0.3, action: again(() => this.hotDrink('fire')) });
       if ((this.snowLocal || 0) > 0.25) btns.push({ label: '融雪（40 分钟，约 1.2 L）', disabled: inv.water >= inv.waterCap - 0.05, action: again(() => this.meltSnow('fire')) });
@@ -1281,6 +1282,63 @@ class Game {
     btns.push({ label: '把火弄灭', cls: 'danger', action: () => { this.clearFire(); this.msg('你用土把火堆压灭，又踩了几脚，确认没有一点火星了。', 'info'); } });
     btns.push({ label: '先这样' });
     this.ui.modal('火堆', `<p>火堆还能烧约 <b>${fmt(Math.max(0.1, f.left), 1)} 小时</b>。站在火边就能取暖、烤干衣服（现在潮湿度 ${Math.round(s.wet)}%，核心体温 ${fmt(s.core, 1)}℃）。</p>${pot ? '' : '<p class="muted">你没有锅（炉头套锅或钛杯），没法在火上烧水煮东西。</p>'}<p class="muted">水壶 ${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${inv.has('thermos') ? `；保温壶 ${fmt(inv.flask, 2)} L` : ''}</p>`, btns);
+  }
+
+  // ===================== 热水泡脚 =====================
+  // 一盆 40℃ 左右的热水泡二十多分钟，脚上的血管扩张，热量顺着血流进身体：核心体温能回升半度左右。
+  // 泡脚的水不入口，雪水、溪水、水洼的生水都行；要有盆，还要有火（火堆 + 锅，或炉子）。
+  soakWater() {
+    const inv = this.inv, P = this.player.pos;
+    let near = null;
+    for (const it of this.world.interactables) if (it.type === 'water' && Math.hypot(P.x - it.x, P.z - it.z) < it.r) { near = it; break; }
+    const frozen = SEASONS[this.seasonKey].water <= 0;
+    if (!near && P.x > STREAM.x0 + 30 && P.x < STREAM.x1 - 30 && Math.abs(P.z - (routeZ(P.x) + STREAM.off)) < 3.6) near = { frozen };
+    if ((this.snowLocal || 0) > 0.25) return { kind: 'snow', label: '铲雪化水' };
+    if (near && (near.frozen || frozen) && !near.dry) return { kind: 'snow', label: '凿冰化水' };
+    if (near && !near.dry) return { kind: 'raw', label: '就近舀一盆溪水' };
+    if (this.fieldWater().puddle) return { kind: 'raw', label: '舀一盆水洼里的积水' };
+    if (inv.water >= 2.5) return { kind: 'bottle', label: '倒出水壶里的 2.5 L 饮用水' };
+    return { kind: null, label: '附近没有雪、溪水或水洼，水壶里的水也不够 2.5 L' };
+  }
+  soakHeat(kind) {
+    const snow = kind === 'snow';
+    if (this.nearFire() && this.hasPot()) { const h = snow ? 0.85 : 0.5; return { src: 'fire', hours: h, ok: this.fire.left >= h + 0.45, label: `架锅在火上烧（约 ${Math.round(h * 60)} 分钟）`, why: '火快灭了，先添柴' }; }
+    if (this.inv.has('stove')) { const gas = snow ? 2 : 0.6, h = snow ? 0.6 : 0.35; return { src: 'stove', gas, hours: h, ok: this.inv.gasLeft() >= gas, label: `用炉子烧（约 ${Math.round(h * 60)} 分钟，耗气 ${fmt(gas / 6 * 100, 0)}% 罐）`, why: '燃气不够烧一盆水' }; }
+    if (this.nearFire()) return { ok: false, why: '有火，但没有能架在火上烧水的锅（炉头套锅或钛杯）' };
+    return { ok: false, why: '没有火：先生一堆火（T → 捡柴生火），或者带上炉子' };
+  }
+  footSoakMenu() {
+    const inv = this.inv, s = this.surv;
+    if (!inv.has('basin')) { this.msg('你没有盆。', 'warn'); return; }
+    const w = this.soakWater(), h = this.soakHeat(w.kind || 'raw');
+    const ok = w.kind && h.ok;
+    const warn = s.core < 34.5 ? '<p style="color:#e0483c">⚠ 你已经失温比较重了。这时先暖手脚，四肢冰冷的血会一下子流回心脏，核心体温反而会先往下掉。应该先暖躯干：烤火、钻睡袋、裹保温毯、喝热水、吃东西。</p>' : '';
+    const sprain = s.status.sprain ? '<p style="color:#e8913a">⚠ 你的脚踝崴伤了：急性扭伤头两天应该冷敷，泡热水会肿得更厉害。</p>' : '';
+    this.ui.modal('热水泡脚', `<p>水：${w.label}。${w.kind === 'bottle' ? '（附近没有雪和溪水，只能用饮用水了）' : ''}</p><p>火：${h.ok ? h.label : `<span style="color:#e8913a">${h.why}</span>`}。</p><p class="muted">水烧到 40℃ 左右，再泡 25 分钟。泡完擦干脚、换上干袜子。</p>${warn}${sprain}`,
+      [{ label: '烧水泡脚', disabled: !ok, action: () => this.footSoak(w, h) }, { label: '算了' }]);
+  }
+  footSoak(w, h) {
+    const inv = this.inv, s = this.surv;
+    if (h.src === 'stove' && !inv.useGas(h.gas)) return;
+    if (w.kind === 'bottle') { inv.water -= 2.5; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water)); }
+    const total = h.hours + 0.42, need = Math.round(total * SEC_PER_GAME_HOUR), heatN = Math.round(h.hours * SEC_PER_GAME_HOUR);
+    let n = 0, cs = null;   // cs：水烧好、脚放进去那一刻的核心体温（烧水时坐在火边，身子可能已经先暖过来了）
+    this.skipTime(total, 'rest', { title: '热水泡脚', warm: true, step: () => { n++; if (n === heatN) cs = s.core; }, done: () => {
+      const prep = (w.kind === 'snow' ? '你铲了几锅雪（冰）' : w.kind === 'raw' ? '你舀了一盆水' : '你倒出 2.5 L 饮用水') + (h.src === 'fire' ? '，架在火上一锅一锅烧热，倒进折叠盆里。' : '，用炉子烧热，倒进折叠盆里。');
+      if (n < need - 1) return `<p>${prep}可还没泡多久就撑不下去了。</p>`;
+      let html;
+      if ((cs ?? s.core) < 34.5) {
+        s.core -= 0.25;
+        html = `<p>${prep}你把冻僵的脚泡进热水里……一阵刺骨的寒意反而从腿上涌了上来，身体抖得更厉害了（核心体温 −0.25℃）。</p><p class="muted">失温比较重时先暖手脚，四肢冰冷的血一下子流回心脏，核心体温会先往下掉（“复温后降”）。应该先暖躯干：烤火、钻睡袋、裹保温毯、喝热水、吃东西，缓过来再泡脚。</p>`;
+      } else {
+        const g = Math.max(0, Math.min(0.6, 37.2 - s.core)); s.core += g;
+        s.mental = Math.min(100, s.mental + 8); s.energy = Math.min(100, s.energy + 3);
+        s.addStatus('footbath', { t: 4 * SEC_PER_GAME_HOUR });
+        html = `<p>${prep}你把脚泡进冒着热气的水里，一股暖流从脚底慢慢爬上来，冻木的脚趾一点点有了知觉。泡了二十多分钟，后背都微微出了汗${g >= 0.05 ? `（核心体温 +${fmt(g, 1)}℃）` : ''}。擦干脚、换上干袜子，整个人都松快了。</p>`;
+      }
+      if (s.status.sprain) { if (s.status.sprain.t !== undefined) s.status.sprain.t += 5 * SEC_PER_GAME_HOUR; html += '<p style="color:#e8913a">崴伤的脚踝一泡热水，肿得更厉害了——急性扭伤头两天应该冷敷。</p>'; }
+      return html;
+    } });
   }
 
   // ===================== 就地取水：雨水 / 积雪 / 水洼 =====================
@@ -1695,6 +1753,7 @@ class Game {
         if (mode === 'outside') q -= 0.35;
         if (!flat && tentMode) q -= 0.25;
         if (s.mental < 30) q -= 0.2;
+        if (s.status.footbath) q += 0.15;   // 脚暖了更容易入睡
         if (s.altSick > 50) q -= 0.3;
         env.sleepQ = clamp(q, 0.1, 1.2);
         qSum += env.sleepQ; n++;
@@ -1704,7 +1763,7 @@ class Game {
         if (tentMode && !inv.tentDamaged && inv.has('tent3') && !inv.has('tent4') && this.windLocal >= 8 && this.rng() < 0.02) { inv.tentDamaged = true; torn = true; }
         if (s.health <= 0) { woke = 'dead'; break; }
         if (sleepMode && i > 20 && (s.core < 34.6 || s.health < 15 || s.hydration < 3)) { woke = s.core < 34.6 ? '你被冻醒了，浑身止不住地发抖……' : '你在剧烈的不适中醒来。'; break; }
-        if (job && i > 3 && (s.core < 34.8 || s.health < 15)) { woke = '你冷得受不了，只好提前停了下来。'; break; }
+        if (job && i > 3 && ((s.core < 34.8 && !job.warm) || s.health < 15)) { woke = '你冷得受不了，只好提前停了下来。'; break; }
       }
       this.sleeping = false;
       if (this.campTent) { this.scene.remove(this.campTent); this.campTent = null; }
