@@ -79,7 +79,7 @@ export class UI {
       <div>X</div><div>展开 / 收起登山杖：更稳、更抗风、爬坡省力（雷暴时记得收起）</div>
       <div>J（按住）</div><div>原地跳动取暖：产热但极耗体力；环境太冷时只能延缓失温</div>
       <div>鼠标</div><div>转动视角（先点击画面锁定鼠标），滚轮调整第三人称距离</div>
-      <div>空格</div><div>跳跃 / 起身 / 危险时稳住平衡（QTE）。无敌模式下长按起飞：踏空后空格上升、C 下降、WASD 前后左右，滚轮或 +/- 换速度档（5 m/s 到 3.5 马赫），按住 C 降到地面才落地</div>
+      <div>空格</div><div>跳跃 / 起身 / 危险时稳住平衡（QTE）。无敌模式下长按起飞：踏空后空格上升、C 下降、WASD 前后左右，滚轮或 +/- 换速度档（大气层里最快 3.5 马赫），按住 C 降到地面才落地。一直往上飞能冲出大气层：太空里最快 0.3 倍光速，按 N 对准月球 / 太阳 / 地球，能降落月面、钻进太阳</div>
       <div>V</div><div>切换 第一人称 / 第三人称</div>
       <div>B</div><div>打开背包：吃喝、穿脱衣物、用药、烧水、求救（时间暂停）</div>
       <div>M</div><div>查看全线地图与海拔剖面（需要纸质地图或导航设备）</div>
@@ -346,6 +346,13 @@ export class UI {
     const day = Math.floor(g.gameMin / 1440) + 1, hm = g.gameMin % 1440;
     const hh = String(Math.floor(hm / 60)).padStart(2, '0'), mm = String(Math.floor(hm % 60)).padStart(2, '0');
     $('hud-time').textContent = `第 ${day} 天  ${hh}:${mm}`;
+    const spaceMode = g.realm && g.realm !== 'earth';
+    const nav = spaceMode ? null : g.navDevice();
+    const next = ROUTE[Math.min(g.reached + 1, ROUTE.length - 1)];
+    if (spaceMode) {   // 太空 / 月面
+      const H = g.spaceHUD();
+      $('hud-wx').innerHTML = H.wx; $('hud-alt').innerHTML = H.alt; $('hud-next').innerHTML = H.next; $('wpmark').style.display = 'none';
+    } else {
     const W = g.wxLabel();
     const dirs =['东', '东南', '南', '西南', '西', '西北', '北', '东北'];
     const wa = Math.atan2(-g.weather.windDir.y, -g.weather.windDir.x); // 风来向
@@ -353,8 +360,6 @@ export class UI {
     const wname = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'][Math.round(bearing / 45) % 8];
     $('hud-wx').innerHTML = `${W.icon} ${W.name}${W.ridge ? `<span style="opacity:.65">（主脊 ${W.ridge}）</span>` : ''} · 气温 <b>${fmt(g.airTemp, 0)}℃</b> · 体感 ${fmt(s.teff, 0)}℃ · ${wname}风 <b>${Math.round(g.windLocal)}</b> 级`;
     $('hud-alt').innerHTML = `海拔 <b>${Math.round(g.altitude)}</b> m${g.shelterNow ? ' · <span style="color:#6fbf73">避风处</span>' : ''}${g.lost ? ' · <span style="color:#e0483c">偏离路线</span>' : ''}`;
-    const next = ROUTE[Math.min(g.reached + 1, ROUTE.length - 1)];
-    const nav = g.navDevice();
     const hasGPS = nav === 'gps';
     const GP = g.gpsPos;
     const lateral = Math.abs(GP.z - routeZ(GP.x));
@@ -371,6 +376,7 @@ export class UI {
       ? `下一站：${next.name} · <span class="dir">${arrow}</span> ${hasGPS ? '' : '约 '}${fmtDist(along)} · ${dAlt >= 0 ? '↑' : '↓'}${Math.abs(dAlt)} m`
       : `下一站：${next.name}${inv.has('map') ? ' <span class="muted">（无路引，对照地图）</span>' : ' <span class="muted">（无路引）</span>'}`;
     if (nav) this.updateWaypointMarker(g, next, along, hasGPS); else $('wpmark').style.display = 'none';
+    }
 
     // 指标条
     const setBar = (k, v, max, txt, low) => {

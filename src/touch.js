@@ -158,7 +158,7 @@ export class TouchControls {
       return `<div class="keys-table">
         <div>左侧摇杆</div><div>移动。推得越远走得越快；按住屏幕左半边任意位置都能拉出摇杆</div>
         <div>右侧滑动</div><div>转动视角；双指捏合 / 张开调整第三人称距离</div>
-        <div>跳</div><div>跳跃 / 起身。脚下打滑时（QTE）点击屏幕任意处稳住。无敌模式下长按起飞：踏空后按住「跳」上升、按住「蹲」下降，「跑」/「趴」变成加速 / 减速（最快 3.5 马赫），按住「蹲」降到地面才落地</div>
+        <div>跳</div><div>跳跃 / 起身。脚下打滑时（QTE）点击屏幕任意处稳住。无敌模式下长按起飞：踏空后按住「跳」上升、按住「蹲」下降，「跑」/「趴」变成加速 / 减速（大气层里最快 3.5 马赫），按住「蹲」降到地面才落地。一直往上飞能冲出大气层：太空里最快 0.3 倍光速，「更多」里对准月球 / 太阳 / 地球</div>
         <div>跑</div><div>快跑开关（消耗大量体力；松开摇杆自动停下）</div>
         <div>蹲 / 趴</div><div>蹲下抵御阵风、石海更稳；趴下在狂风中最稳；打雷时要蹲，别趴</div>
         <div>互动</div><div>靠近水源、路牌、驴友、补给点时，画面下方会出现互动按钮；野外下雨、有积雪或雨后有水洼时，会出现“就地取水”（接雨水 / 融雪 / 舀积水）</div>
@@ -194,6 +194,7 @@ export class TouchControls {
     const g = this.g;
     if (g.state !== 'play' || g.anyUI() || g.sleeping) return;
     const btns = [
+      ...(g.realm && g.realm !== 'earth' ? [{ label: '对准下一个天体（月球 / 太阳 / 地球）', cls: 'on', action: () => tap('KeyN') }] : []),
       { label: g.player.firstPerson ? '切换到第三人称' : '切换到第一人称', action: () => tap('KeyV') },
       { label: '开关小地图', action: () => tap('KeyG') },
       { label: '操作说明', action: () => setTimeout(() => tap('KeyH'), 0) },
@@ -265,7 +266,7 @@ export class TouchControls {
     }
     const k = 5.2 / Math.max(window.innerWidth, window.innerHeight);   // 横扫一个屏宽 ≈ 转 300°
     pl.camYaw += dx * k;
-    pl.camPitch = clamp(pl.camPitch - dy * k * 0.85, -1.25, 0.95);
+    pl.camPitch = clamp(pl.camPitch - dy * k * 0.85, ...this.g.pitchRange());
   }
 
   onUp(e) {

@@ -9,13 +9,21 @@ const GRAVITY = 22;
 // 无敌模式：快跑 10 m/s；起跳初速 √(2gh) → 跳起 2 米
 const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
 // 无敌模式：长按空格（超过 0.25 秒）起飞，之后一直踏空悬停；按住下降落到地面才退出飞行
-// 飞行速度分档：低速按 m/s，高速按马赫，最快 3.5 马赫。声速随气温变：c = 331.3 + 0.606·T（m/s）
-export const FLY_GEARS = [5, 10, 20, 30, 50, 80, 120, 200, 'M1', 'M1.5', 'M2', 'M2.5', 'M3', 'M3.5'];
+// 飞行速度分档：低速按 m/s，再按马赫，出了大气层按 km/s，最后按光速。声速随气温变：c = 331.3 + 0.606·T（m/s）
+// 大气层里最快 3.5 马赫（更高的档要出了大气层才生效）；太空里最快 0.3 倍光速
+export const FLY_GEARS = [5, 10, 20, 30, 50, 80, 120, 200, 'M1', 'M1.5', 'M2', 'M2.5', 'M3', 'M3.5',
+  'K3', 'K7.9', 'K11.2', 'K16.7', 'K100', 'K1000', 'K10000', 'C0.1', 'C0.2', 'C0.3'];
 export const FLY_GEAR0 = 3;   // 默认 30 m/s
+export const GEAR_ATMO_MAX = FLY_GEARS.indexOf('M3.5');
+export const LIGHT = 299792458;
 export const soundSpeed = (tC) => 331.3 + 0.606 * tC;
-export const gearSpeed = (g, tC) => typeof g === 'string' ? parseFloat(g.slice(1)) * soundSpeed(tC) : g;
-export const gearLabel = (g, tC) => typeof g === 'string' ? `马赫 ${g.slice(1)}（约 ${Math.round(gearSpeed(g, tC))} m/s）` : `${g} m/s`;
-const FLY_HOLD = 0.25, FLY_UP_MIN = 6, FLY_UP_MAX = 120, FLY_MAX = 150, FLY_CEIL_Y = 1100;   // 最高：离地 150 米或海拔 6000 米，取高的那个
+export const gearSpeed = (g, tC) => typeof g !== 'string' ? g : g[0] === 'M' ? parseFloat(g.slice(1)) * soundSpeed(tC) : g[0] === 'K' ? parseFloat(g.slice(1)) * 1000 : parseFloat(g.slice(1)) * LIGHT;
+const GEAR_NOTE = { 'K7.9': '第一宇宙速度：贴着地球绕圈', 'K11.2': '第二宇宙速度：挣脱地球引力', 'K16.7': '第三宇宙速度：飞出太阳系', 'C0.3': '时间比地球上慢 4.6%（狭义相对论）' };
+export const gearLabel = (g, tC) => typeof g !== 'string' ? `${g} m/s`
+  : g[0] === 'M' ? `马赫 ${g.slice(1)}（约 ${Math.round(gearSpeed(g, tC))} m/s）`
+  : g[0] === 'K' ? `${Number(g.slice(1)).toLocaleString()} km/s${GEAR_NOTE[g] ? `（${GEAR_NOTE[g]}）` : ''}`
+  : `${g.slice(1)} 倍光速（约 ${Math.round(gearSpeed(g) / 1000).toLocaleString()} km/s）${GEAR_NOTE[g] ? `（${GEAR_NOTE[g]}）` : ''}`;
+const FLY_HOLD = 0.25, FLY_UP_MIN = 6;
 export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷', fly: '踏空飞行' };
 
 function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
@@ -65,7 +73,7 @@ export class Player {
     if (this.coma) return STANCE_NAME.coma;
     if (this.flying) {
       const v = this.speed3 || 0;
-      return `${STANCE_NAME.fly} ${v < 10 ? v.toFixed(1) : Math.round(v)} m/s · 马赫 ${(v / soundSpeed(this.airT ?? 10)).toFixed(2)}`;
+      return `${STANCE_NAME.fly} ${v < 10 ? v.toFixed(1) : Math.round(v)} m/s` + (this.vacuum ? '' : ` · 马赫 ${(v / soundSpeed(this.airT ?? 10)).toFixed(2)}`);
     }
     if (this.ko > 0) return STANCE_NAME.ko;
     if (this.warming) return STANCE_NAME.warm;
@@ -270,9 +278,9 @@ export class Player {
     let speed = base * (mods.god ? 1 : mods.speedMult) * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
     if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
-    this.airT = mods.airT ?? 10;
+    this.airT = mods.airT ?? 10; this.vacuum = !!mods.vacuum;
     if (this.flyGear === undefined) this.flyGear = FLY_GEAR0;
-    const flyV = gearSpeed(FLY_GEARS[this.flyGear], this.airT);
+    const flyV = Math.min(gearSpeed(FLY_GEARS[this.flyGear], this.airT), mods.flyCap ?? 3.5 * soundSpeed(this.airT));
     if (this.flying) speed = flyV * (analog ? lerp(0.4, 1, aMag) : 1);   // 踏空：前后左右按当前档位
 
     const gNow = groundAt(p.x, p.z);
@@ -330,7 +338,7 @@ export class Player {
     }
     if (this.flying) {
       this.sliding = false; this.slideSpeed = 0; this.sitting = false;
-      const vs = clamp(flyV, FLY_UP_MIN, FLY_UP_MAX);
+      const vs = Math.max(flyV, FLY_UP_MIN);
       const want = ((input.jumpHold ? 1 : 0) - (input.crouch ? 1 : 0)) * vs;   // 空格上升、C 下降，都不按就悬停
       this.vel.y = lerp(this.vel.y, want, 1 - Math.exp(-6 * dt));
     }
@@ -361,10 +369,9 @@ export class Player {
         this.vel.y = 0;
       }
     }
+    const G = mods.gravity ?? GRAVITY;   // 月球上重力只有 1/6
     if (this.flying) {
-      p.y += this.vel.y * dt;
-      const ceil = Math.max(g.y + FLY_MAX, FLY_CEIL_Y);
-      if (p.y > ceil) { p.y = ceil; if (this.vel.y > 0) this.vel.y = 0; }
+      p.y += this.vel.y * dt;   // 飞得够高就交给太空模式（main.js）
       if (p.y <= g.y) {
         p.y = g.y;
         if (input.crouch) {   // 主动降到地面：落地，退出飞行
@@ -373,8 +380,8 @@ export class Player {
         } else if (this.vel.y < 0) this.vel.y = 0;   // 贴着地面掠过，仍然踏空
       }
     } else if (!this.onGround) {
-      this.vel.y -= GRAVITY * dt;
-      p.y += (this.vel.y + 0.5 * GRAVITY * dt) * dt;   // 匀加速的精确积分，跳跃高度不随帧率变化
+      this.vel.y -= G * dt;
+      p.y += (this.vel.y + 0.5 * G * dt) * dt;   // 匀加速的精确积分，跳跃高度不随帧率变化
       if (p.y <= g.y) {
         const impact = -this.vel.y;
         p.y = g.y; this.onGround = true;
@@ -390,7 +397,7 @@ export class Player {
     // 飞行速度（含竖直）与音障
     const v3 = this.flying ? Math.hypot(hspeed, this.vel.y) : hspeed;
     const c = soundSpeed(this.airT);
-    if (this.flying && v3 >= c && (this.speed3 || 0) < c) this.events.push({ type: 'boom' });
+    if (this.flying && !this.vacuum && v3 >= c && (this.speed3 || 0) < c) this.events.push({ type: 'boom' });   // 真空里没有音爆
     this.speed3 = v3;
     this.moving = hspeed > 0.35;
     if (this.moving && this.onGround && !this.sliding) {

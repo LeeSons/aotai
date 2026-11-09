@@ -122,7 +122,57 @@ export const LAKE = (() => {
   return { x, z, r: 22, y: altToY(w.alt) - 10 };
 })();
 
+// ---------- 月面（无敌模式飞到月球后用这套地形） ----------
+// 降落点旁边是一座大环形山（按哥白尼环形山的样子缩小：平坦坑底、中央峰、阶梯状内壁、外侧抛射物），
+// 周围是层层叠叠、大小不一的陨石坑。月面高度 0 = 平均月面。
+export const MOON_CRATER = { x: 0, z: 0, r: 900, floor: -240, rim: 75, peak: 130 };
+const MOON_SCALES = [300, 110, 40, 15];
+function bigCrater(x, z) {
+  const C = MOON_CRATER, dx = x - C.x, dz = z - C.z;
+  const ang = Math.atan2(dz, dx);
+  const q = Math.hypot(dx, dz) / C.r * (1 + N.noise2(Math.cos(ang) * 2.3, Math.sin(ang) * 2.3) * 0.05);
+  if (q >= 1) return C.rim * Math.pow(q, -3) + (q < 1.6 ? N2.fbm(x * 0.02, z * 0.02, 2) * 6 * (1.6 - q) : 0);   // 外侧：抛射物堆积，越远越薄
+  if (q > 0.5) {                                   // 内壁：一级级的阶梯
+    const t = (q - 0.5) / 0.5;
+    const steps = t + Math.sin(t * Math.PI * 7) * 0.035;
+    return C.floor + (C.rim - C.floor) * Math.pow(steps, 1.6);
+  }
+  let y = C.floor + N2.fbm(x * 0.012, z * 0.012, 3) * 10;          // 坑底
+  if (q < 0.16) y += C.peak * Math.pow(1 - q / 0.16, 1.4) * (0.75 + 0.45 * N.noise2(x * 0.01, z * 0.01));   // 中央峰
+  return y;
+}
+function craterField(x, z, s) {
+  const ix = Math.floor(x / s), iz = Math.floor(z / s);
+  let y = 0;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const cx = ix + i, cz = iz + j;
+    if (hash2(cx, cz, s) > 0.42) continue;
+    const px = (cx + 0.15 + 0.7 * hash2(cx, cz, s + 1)) * s, pz = (cz + 0.15 + 0.7 * hash2(cx, cz, s + 2)) * s;
+    const r = s * (0.12 + 0.3 * hash2(cx, cz, s + 3));
+    const d = Math.hypot(x - px, z - pz) / r;
+    if (d > 2.2) continue;
+    const depth = r * 0.16, rimH = depth * 0.3;
+    y += d < 1 ? -depth * (1 - d * d) + rimH * d * d * d * d : rimH * Math.exp(-(d - 1) * 3.2);
+  }
+  return y;
+}
+export function moonHeight(x, z) {
+  let y = N.fbm(x * 0.0009, z * 0.0009, 4) * 30 + N.fbm(x * 0.008, z * 0.008, 3) * 3;
+  y += bigCrater(x, z);
+  for (const s of MOON_SCALES) y += craterField(x, z, s);
+  return y + N2.fbm(x * 0.2, z * 0.2, 2) * 0.12;
+}
+// 离大环形山多近（0–1）：抛射物多、石块多、颜色亮
+function moonEjecta(x, z) { const q = Math.hypot(x - MOON_CRATER.x, z - MOON_CRATER.z) / MOON_CRATER.r; return q < 1 ? 0.6 + 0.4 * smoothstep(0.5, 1, q) : Math.max(0, 1 - (q - 1) / 1.5); }
+const MOON_DARK = new THREE.Color(0.2, 0.198, 0.19), MOON_LIGHT = new THREE.Color(0.36, 0.352, 0.338);
+function moonColor(x, z, ny, out) {
+  const n1 = N.noise2(x * 0.004, z * 0.004), n2 = N2.noise2(x * 0.08, z * 0.08);
+  out.copy(MOON_DARK).lerp(MOON_LIGHT, clamp(0.35 + moonEjecta(x, z) * 0.45 + n1 * 0.15 + n2 * 0.06 + (1 - ny) * 0.5, 0, 1));
+  return out;
+}
+
 export function heightAt(x, z) {
+  if (WORLD.body === 'moon') return moonHeight(x, z);
   const zc = routeZ(x);
   const d = z - zc;
   const ad = Math.abs(d);
@@ -224,6 +274,7 @@ function pal() {
 const tmpC = new THREE.Color(), tmpC2 = new THREE.Color();
 
 function colorAt(x, z, y, ny, out) {
+  if (WORLD.body === 'moon') return moonColor(x, z, ny, out);
   const ti = terrainInfo(x, z);
   const alt = yToAlt(y);
   const P = pal();
@@ -624,9 +675,17 @@ function buildObjects(chunk) {
   const group = new THREE.Group();
   const rocks = [], trees = { fir: [], larch: [], birch: [], maple: [], maple2: [], bonsai: [], rhodo: [], shrub: [], dead: [] };
   const ccx = x0 + CHUNK / 2, ccz = z0 + CHUNK / 2;
-  const tries = Math.abs(ccz - routeZ(ccx)) < 220 + openAt(ccx) * 260 ? 1400 : 450;
+  const moon = WORLD.body === 'moon';
+  const tries = moon ? 600 : Math.abs(ccz - routeZ(ccx)) < 220 + openAt(ccx) * 260 ? 1400 : 450;
   for (let n = 0; n < tries; n++) {
     const x = x0 + rnd() * CHUNK, z = z0 + rnd() * CHUNK;
+    if (moon) {   // 月面：只有石块，大环形山附近多
+      const r1 = rnd(), r2 = rnd(), r3 = rnd();
+      if (r1 > 0.025 + 0.22 * moonEjecta(x, z)) continue;
+      const y = heightAt(x, z), r = 0.4 + Math.pow(r2, 2.5) * 2.4;
+      rocks.push({ x, z, y: y - r * 0.25, r, h: r * (0.5 + r3 * 0.5), v: (r2 * 2) | 0, rot: rnd() * 6.28, c: 0.33 + rnd() * 0.12, l: 0 });
+      continue;
+    }
     const ti = terrainInfo(x, z);
     const y = heightAt(x, z);
     const alt = yToAlt(y);
@@ -737,6 +796,7 @@ const GRASS_TINT = {
   autumn: [[0.36, 0.34, 0.12], [0.62, 0.46, 0.18]], winter: [[0.38, 0.33, 0.22], [0.5, 0.44, 0.3]],
 };
 function buildGrass(chunk) {
+  if (WORLD.body === 'moon') return null;   // 月面寸草不生
   const x0 = chunk.cx * CHUNK, z0 = chunk.cz * CHUNK;
   const rnd = mulberry32((chunk.cx * 9176) ^ (chunk.cz * 3517) ^ 0x1234);
   const sk = WORLD.season;
