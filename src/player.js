@@ -8,9 +8,14 @@ export const SPEED = { walk: 3.3, run: 7.0, crouch: 1.6, prone: 0.7 };
 const GRAVITY = 22;
 // 无敌模式：快跑 10 m/s；起跳初速 √(2gh) → 跳起 2 米
 const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
-// 无敌模式：长按空格（超过 0.25 秒）起飞，之后一直踏空悬停；
-// 前后左右 5 m/s、上下 6 m/s，按住快跑都是 10 m/s；最高离地 150 米；按住下降落到地面才退出飞行
-const FLY_HOLD = 0.25, FLY_SPEED = 5, FLY_UP = 6, FLY_MAX = 150;
+// 无敌模式：长按空格（超过 0.25 秒）起飞，之后一直踏空悬停；按住下降落到地面才退出飞行
+// 飞行速度分档：低速按 m/s，高速按马赫，最快 3.5 马赫。声速随气温变：c = 331.3 + 0.606·T（m/s）
+export const FLY_GEARS = [5, 10, 20, 30, 50, 80, 120, 200, 'M1', 'M1.5', 'M2', 'M2.5', 'M3', 'M3.5'];
+export const FLY_GEAR0 = 3;   // 默认 30 m/s
+export const soundSpeed = (tC) => 331.3 + 0.606 * tC;
+export const gearSpeed = (g, tC) => typeof g === 'string' ? parseFloat(g.slice(1)) * soundSpeed(tC) : g;
+export const gearLabel = (g, tC) => typeof g === 'string' ? `马赫 ${g.slice(1)}（约 ${Math.round(gearSpeed(g, tC))} m/s）` : `${g} m/s`;
+const FLY_HOLD = 0.25, FLY_UP_MIN = 6, FLY_UP_MAX = 120, FLY_MAX = 150, FLY_CEIL_Y = 1100;   // 最高：离地 150 米或海拔 6000 米，取高的那个
 export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷', fly: '踏空飞行' };
 
 function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
@@ -58,7 +63,10 @@ export class Player {
   get prone() { return this.stance === 'prone'; }
   stanceLabel() {
     if (this.coma) return STANCE_NAME.coma;
-    if (this.flying) return STANCE_NAME.fly;
+    if (this.flying) {
+      const v = this.speed3 || 0;
+      return `${STANCE_NAME.fly} ${v < 10 ? v.toFixed(1) : Math.round(v)} m/s · 马赫 ${(v / soundSpeed(this.airT ?? 10)).toFixed(2)}`;
+    }
     if (this.ko > 0) return STANCE_NAME.ko;
     if (this.warming) return STANCE_NAME.warm;
     if (this.sliding) return STANCE_NAME.slide;
@@ -262,7 +270,10 @@ export class Player {
     let speed = base * (mods.god ? 1 : mods.speedMult) * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
     if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
-    if (this.flying) speed = (input.sprint ? GOD_RUN : FLY_SPEED) * (analog ? lerp(0.4, 1, aMag) : 1);   // 踏空：前后左右一样快
+    this.airT = mods.airT ?? 10;
+    if (this.flyGear === undefined) this.flyGear = FLY_GEAR0;
+    const flyV = gearSpeed(FLY_GEARS[this.flyGear], this.airT);
+    if (this.flying) speed = flyV * (analog ? lerp(0.4, 1, aMag) : 1);   // 踏空：前后左右按当前档位
 
     const gNow = groundAt(p.x, p.z);
     const n = this.terrainNormal(p.x, p.z);
@@ -298,7 +309,7 @@ export class Player {
       } else if (this.slideSpeed < 0.5 && n.y > slideNY - 0.08) { this.sliding = false; this.slideSpeed = 0; }
     } else {
       const target = wish.clone().multiplyScalar(locked ? 0 : speed);
-      const acc = this.onGround ? (this.stance === 'prone' ? 6 : 11) : mods.god ? 6 : 1.5;   // 无敌模式在空中也能自如转向
+      const acc = this.onGround ? (this.stance === 'prone' ? 6 : 11) : this.flying ? 4 : mods.god ? 6 : 1.5;   // 无敌模式在空中也能自如转向
       this.vel.x = lerp(this.vel.x, target.x, 1 - Math.exp(-acc * dt));
       this.vel.z = lerp(this.vel.z, target.z, 1 - Math.exp(-acc * dt));
     }
@@ -319,7 +330,7 @@ export class Player {
     }
     if (this.flying) {
       this.sliding = false; this.slideSpeed = 0; this.sitting = false;
-      const vs = input.sprint ? GOD_RUN : FLY_UP;
+      const vs = clamp(flyV, FLY_UP_MIN, FLY_UP_MAX);
       const want = ((input.jumpHold ? 1 : 0) - (input.crouch ? 1 : 0)) * vs;   // 空格上升、C 下降，都不按就悬停
       this.vel.y = lerp(this.vel.y, want, 1 - Math.exp(-6 * dt));
     }
@@ -352,7 +363,8 @@ export class Player {
     }
     if (this.flying) {
       p.y += this.vel.y * dt;
-      if (p.y > g.y + FLY_MAX) { p.y = g.y + FLY_MAX; if (this.vel.y > 0) this.vel.y = 0; }
+      const ceil = Math.max(g.y + FLY_MAX, FLY_CEIL_Y);
+      if (p.y > ceil) { p.y = ceil; if (this.vel.y > 0) this.vel.y = 0; }
       if (p.y <= g.y) {
         p.y = g.y;
         if (input.crouch) {   // 主动降到地面：落地，退出飞行
@@ -375,6 +387,11 @@ export class Player {
 
     const hspeed = Math.hypot(this.vel.x, this.vel.z);
     this.speedNow = hspeed;
+    // 飞行速度（含竖直）与音障
+    const v3 = this.flying ? Math.hypot(hspeed, this.vel.y) : hspeed;
+    const c = soundSpeed(this.airT);
+    if (this.flying && v3 >= c && (this.speed3 || 0) < c) this.events.push({ type: 'boom' });
+    this.speed3 = v3;
     this.moving = hspeed > 0.35;
     if (this.moving && this.onGround && !this.sliding) {
       this.stepAcc += hspeed * dt;

@@ -7,7 +7,7 @@ import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt,
 import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
-import { Player } from './player.js';
+import { Player, FLY_GEARS, FLY_GEAR0, gearLabel } from './player.js';
 import { Inventory, Survival } from './survival.js';
 import { Hazards } from './hazards.js';
 import { Audio } from './audio.js';
@@ -401,8 +401,15 @@ class Game {
       this.player.camYaw += dx * 0.0022;
       this.player.camPitch = clamp(this.player.camPitch - dy * 0.0022, -1.25, 0.95);
     });
+    let wheelAcc = 0, wheelT = 0;
     window.addEventListener('wheel', (e) => {
       if (this.state !== 'play' || this.anyUI()) return;
+      if (this.player.flying) {   // 踏空时滚轮调飞行速度：往上滚加速、往下滚减速（触控板一次会发很多小事件，攒够一格再换档）
+        wheelAcc += e.deltaY;
+        const now = performance.now();
+        if (Math.abs(wheelAcc) >= 40 && now - wheelT > 90) { this.flySpeedStep(wheelAcc < 0 ? 1 : -1); wheelAcc = 0; wheelT = now; }
+        return;
+      }
       this.player.camDist = clamp(this.player.camDist + Math.sign(e.deltaY) * 0.5, 2.2, 11);
     }, { passive: true });
   }
@@ -447,6 +454,9 @@ class Game {
         pl.sitting = false; pl.setStance(pl.stance === 'prone' ? 'crouch' : 'prone');
         if (pl.stance === 'prone') this.msg('你趴在地上匍匐前进。', 'info'); break;
       }
+      case 'Equal': case 'NumpadAdd': case 'Minus': case 'NumpadSubtract':
+        if (this.player.flying) this.flySpeedStep(code === 'Equal' || code === 'NumpadAdd' ? 1 : -1);
+        break;
       case 'KeyX':
         if (this.player.togglePoles()) { this.audio.pole(); this.msg(this.player.polesOut ? '你展开了登山杖。' : '你收起了登山杖。', 'info'); }
         else this.msg('你没有登山杖。', 'warn');
@@ -487,6 +497,15 @@ class Game {
     this.resize();
   }
 
+  // 飞行换档：d = +1 加速 / −1 减速
+  flySpeedStep(d) {
+    const pl = this.player;
+    const g0 = pl.flyGear ?? FLY_GEAR0;
+    pl.flyGear = clamp(g0 + d, 0, FLY_GEARS.length - 1);
+    const top = pl.flyGear === FLY_GEARS.length - 1, low = pl.flyGear === 0;
+    this.ui.alert(`飞行速度：${gearLabel(FLY_GEARS[pl.flyGear], this.airTemp)}${top && d > 0 && g0 === pl.flyGear ? '（已是最快）' : low && d < 0 && g0 === pl.flyGear ? '（已是最慢）' : ''}`, 1.3);
+  }
+
   setGod(on) {
     this.god = !!on;
     try { localStorage.setItem('aotai_god', this.god ? '1' : '0'); } catch (e) { /* */ }
@@ -496,7 +515,7 @@ class Game {
     if (this.god) {
       s.fill();
     }
-    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后按住「跳」/「蹲」上升下降，按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后空格上升、C 下降、WASD 前后左右，按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后按住「跳」/「蹲」上升下降，点「加速」/「减速」换档（最快 3.5 马赫），按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后空格上升、C 下降、WASD 前后左右，滚轮或 +/- 换速度档（最快 3.5 马赫），按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
   }
 
   gfxMenu(back) {
@@ -824,7 +843,7 @@ class Game {
     if (lostSense) this.tip('ghostwall', '浓雾里四周一模一样……你总觉得自己在绕圈子。没有指北针，方向感会慢慢偏移（鬼打墙）。');
     const mods = {
       drift: ghost, coma: s.coma, shiver: s.coma ? 0 : clamp((36.2 - s.core) / 1.5, 0, 1), tired: s.stamina < 18 && !pl.moving ? 1 : 0, load: clamp(inv.weight() / 30, 0, 1.2),
-      locked: this.sleeping, speedMult: s.speedMult(env), canSprint: this.god || s.canSprint(), canJump: this.god || (s.stamina > 8 && !s.status.fracture), god: this.god,
+      locked: this.sleeping, speedMult: s.speedMult(env), canSprint: this.god || s.canSprint(), canJump: this.god || (s.stamina > 8 && !s.status.fracture), god: this.god, airT: this.airTemp,
       slideNY: (this.ti.ad < 9 ? 0.6 : 0.745) + (this.snowLocal > 0.35 && !inv.has('cramp') ? 0.08 : 0) + (this.weather.wetGround > 0.5 ? 0.03 : 0), stone: env.stone || ['stone', 'pillars'].includes(this.ti.type),
       poles: pl.polesOut, lean: 0, sway: coldSway,
     };
@@ -832,6 +851,16 @@ class Game {
     if (s.core < 33.5 || s.mental <= 0) { pl.camYaw += Math.sin(this.time * 0.7) * dt * 0.25; }
     pl.update(sdt, this.input, mods);
     k.jump = false;
+    // 飞行边界：再往外就飞出秦岭了
+    if (pl.flying) {
+      const X0 = -2500, X1 = ROUTE_LENGTH + 2500, DZ = 4000;
+      const zc = routeZ(clamp(pl.pos.x, X0, X1)), d = pl.pos.z - zc;
+      if (pl.pos.x < X0 || pl.pos.x > X1 || Math.abs(d) > DZ) {
+        pl.pos.x = clamp(pl.pos.x, X0, X1); pl.pos.z = zc + clamp(d, -DZ, DZ);
+        pl.vel.x *= 0.2; pl.vel.z *= 0.2;
+        this.tip('flyedge', '再往外就飞出秦岭了——这里是飞行边界，掉头吧。');
+      }
+    }
     this.handlePlayerEvents();
     // 定位：GPS 精确；没有 GPS 时大雾/黑夜中估算偏差很大；没有指北针时方向也会乱
     const hasGPS = inv.has('gps') && inv.battery.gps > 0;
@@ -891,7 +920,9 @@ class Game {
     if (s.health <= 0) { this.die(s.cause || '体力衰竭'); return; }
     // 世界动态
     this.world.update(dt, this.time, this.weather.windDir.clone().multiplyScalar(this.windLocal), this.camera.position);
-    this.terrain.update(pl.pos.x, pl.pos.z, 4);
+    // 高速飞行时地形来不及细化：多给点时间，先保证脚下有地，石头和草等慢下来再补
+    const fastFly = pl.flying && (pl.speed3 || 0) > 60;
+    this.terrain.update(pl.pos.x, pl.pos.z, fastFly ? 9 : 4, false, fastFly);
     // 相机
     this.camShake = Math.max(0, this.camShake - dt * 6);
     const wob = (s.core < 34 ? (34 - s.core) * 0.4 : 0) + (s.altSick > 60 ? (s.altSick - 60) / 40 : 0) + (s.mental < 15 ? 0.5 : 0);
@@ -927,8 +958,11 @@ class Game {
       } else if (ev.type === 'stomp') {
         this.audio.step(this.snowLocal > 0.3 ? 'snow' : 'grass', 5);
       } else if (ev.type === 'takeoff') {
-        this.tip('fly', IS_TOUCH ? '你踏空飞了起来！按住「跳」上升、按住「蹲」下降，摇杆前后左右飞，开「跑」加速。按住「蹲」一直降到地面才会落地。'
-          : '你踏空飞了起来！空格上升、C 下降，WASD 前后左右飞，按住 Shift 加速。按住 C 一直降到地面才会落地。');
+        this.tip('fly', IS_TOUCH ? '你踏空飞了起来！按住「跳」上升、按住「蹲」下降，摇杆前后左右飞；点「加速」/「减速」换速度档，最快 3.5 马赫。按住「蹲」一直降到地面才会落地。'
+          : '你踏空飞了起来！空格上升、C 下降，WASD 前后左右飞；滚轮或 +/- 换速度档，最快 3.5 马赫。按住 C 一直降到地面才会落地。');
+      } else if (ev.type === 'boom') {
+        this.audio.thunder(2); this.camShake = Math.max(this.camShake, 5);
+        this.tip('boom', '「轰」的一声——你突破了音障！（音爆）');
       } else if (ev.type === 'knockdown') {
         this.camShake = Math.max(this.camShake, 6);
       } else if (ev.type === 'jump') {

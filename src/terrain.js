@@ -809,8 +809,9 @@ export class TerrainManager {
     this.radius = 6;
   }
   key(cx, cz) { return cx + ',' + cz; }
-  wantedRes(dist) { return dist <= 1 ? 56 : dist <= 3 ? 28 : 12; }
-  update(px, pz, budgetMs = 6, force = false) {
+  // fast：高速飞行，近处只要中等精度，而且不降已有的精度
+  wantedRes(dist, fast) { return fast ? (dist <= 1 ? 28 : 12) : dist <= 1 ? 56 : dist <= 3 ? 28 : 12; }
+  update(px, pz, budgetMs = 6, force = false, fast = false) {
     const pcx = Math.floor(px / CHUNK), pcz = Math.floor(pz / CHUNK);
     const R = this.radius;
     const t0 = performance.now();
@@ -823,21 +824,24 @@ export class TerrainManager {
       let c = this.chunks.get(k);
       if (!c) { c = new Chunk(cx, cz); this.chunks.set(k, c); }
       c.dist = dist; c.alive = true;
-      const res = this.wantedRes(dist);
-      const needObj = dist <= 3, needGrass = dist <= 1;
-      if (c.res !== res || (needObj && !c.objs) || (needGrass && !c.grassDone)) tasks.push(c);
+      const res = this.wantedRes(dist, fast);
+      const needObj = dist <= 3 && !fast, needGrass = dist <= 1 && !fast;
+      const resBad = fast ? c.res < res : c.res !== res;
+      c.resBad = resBad;
+      if (resBad || (needObj && !c.objs) || (needGrass && !c.grassDone)) tasks.push(c);
     }
     tasks.sort((a, b) => a.dist - b.dist);
     for (const c of tasks) {
       if (!force && performance.now() - t0 > budgetMs) break;
-      const res = this.wantedRes(c.dist);
-      if (c.res !== res) {
+      const res = this.wantedRes(c.dist, fast);
+      if (c.resBad) {
         const g = buildTerrainGeo(c.cx, c.cz, res);
         if (c.mesh) { c.mesh.geometry.dispose(); c.mesh.geometry = g; }
         else { c.mesh = new THREE.Mesh(g, MAT.terrain); c.mesh.receiveShadow = true; c.mesh.castShadow = false; this.scene.add(c.mesh); }
         c.res = res;
         if (!force) continue; // 每块只做一件事，下一帧再继续
       }
+      if (fast) continue;
       if (c.dist <= 3 && !c.objs) { c.objs = buildObjects(c); this.scene.add(c.objs); if (!force) continue; }
       if (c.dist <= 1 && !c.grassDone) { c.grass = buildGrass(c); c.grassDone = true; if (c.grass) this.scene.add(c.grass); }
     }
