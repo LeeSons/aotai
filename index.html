@@ -19,7 +19,6 @@
 })();
 </script>
 <link rel="stylesheet" href="style.css">
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 </head>
 <body>
 <canvas id="gl"></canvas>
@@ -186,6 +185,24 @@
 
 <div id="loading" class="screen hidden"><div class="load-wrap"><div class="load-title">正在进山……</div><div class="load-bar"><div id="load-fill"></div></div><div id="load-tip" class="muted"></div></div></div>
 
-<script type="module" src="src/main.js"></script>
+<script>
+// 版本号加载：GitHub Pages 让浏览器把脚本缓存 10 分钟，更新后可能还在跑旧代码（甚至新旧混着）。
+// 这里每次都不走缓存读一下 version.txt，再给所有游戏脚本加上 ?v=版本号——每次更新刷新一下就是最新版。
+(function () {
+  var MODS = ['audio', 'data', 'fauna', 'hazards', 'main', 'materials', 'noise', 'player', 'survival', 'terrain', 'touch', 'ui', 'weather', 'world'];
+  function boot(v) {
+    var imports = { three: './vendor/three.module.js' };
+    MODS.forEach(function (m) { imports['./src/' + m + '.js'] = './src/' + m + '.js?v=' + v; });
+    var im = document.createElement('script'); im.type = 'importmap'; im.textContent = JSON.stringify({ imports: imports });
+    document.head.appendChild(im);
+    var s = document.createElement('script'); s.type = 'module'; s.src = 'src/main.js?v=' + v;
+    document.body.appendChild(s);
+  }
+  var done = false, go = function (v) { if (!done) { done = true; boot(v); } };
+  setTimeout(function () { go(String(Date.now())); }, 4000);   // 网络太慢就别等了，直接不走缓存
+  fetch('version.txt', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; })
+    .then(function (t) { go((t || '').trim() || String(Date.now())); }, function () { go(String(Date.now())); });
+})();
+</script>
 </body>
 </html>
