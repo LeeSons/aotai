@@ -173,14 +173,14 @@ export const ITEMS = {
   spray:  { name: '防兽喷雾', cat: 'gear', price: 199, weight: 0.3, stack: true, max: 3, desc: '按 Q 喷射，驱赶冲过来的羚牛。每罐可用一次。' },
   // ---- 炊具饮水 ----
   bottle: { name: '水壶(1L)', cat: 'cook', price: 29, weight: 0.15, stack: true, max: 8, desc: '每个增加 1L 携水量。水本身也很重：1 升 = 1 公斤。路上可以在水源灌水，下雨时接雨水，有积雪时融雪。' },
-  stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气，约 6 次）。热食能回暖、提振精神；还能融雪取水、煮沸生水。' },
+  stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气，约 6 次）。热食热水暖得更快、提振精神；还能融雪取水、煮沸生水。' },
   gas:    { name: '备用气罐', cat: 'cook', price: 39, weight: 0.3, stack: true, max: 5, desc: '每罐约 6 次烧水。' },
   tablet: { name: '净水片(10片)', cat: 'cook', price: 39, weight: 0.05, stack: true, max: 4, desc: '处理生水，防止急性腹泻。' },
   // ---- 食物 ----
   meal:   { name: '脱水米饭', cat: 'food', price: 35, weight: 0.2, stack: true, max: 20, kcal: 650, hot: true, desc: '650 kcal。用热水泡更好吃，冷泡也能吃。' },
   biscuit:{ name: '压缩饼干', cat: 'food', price: 10, weight: 0.12, stack: true, max: 30, kcal: 500, dry: true, desc: '500 kcal。很干，吃了会更渴。' },
-  bar:    { name: '能量棒', cat: 'food', price: 12, weight: 0.05, stack: true, max: 30, kcal: 220, quick: true, desc: '220 kcal，快速恢复体力。' },
-  choco:  { name: '巧克力', cat: 'food', price: 18, weight: 0.1, stack: true, max: 20, kcal: 540, quick: true, desc: '540 kcal，高热量，冷天的好朋友。' },
+  bar:    { name: '能量棒', cat: 'food', price: 12, weight: 0.05, stack: true, max: 30, kcal: 220, quick: true, desc: '220 kcal，快速恢复体力，吃下去身体也会多产点热。' },
+  choco:  { name: '巧克力', cat: 'food', price: 18, weight: 0.1, stack: true, max: 20, kcal: 540, quick: true, desc: '540 kcal，高热量，冷天的好朋友：吃下去一两个小时里身体产热明显增加。' },
   jerky:  { name: '牛肉干', cat: 'food', price: 30, weight: 0.15, stack: true, max: 20, kcal: 450, desc: '450 kcal，补充蛋白质和精神。' },
   noodle: { name: '方便面', cat: 'food', price: 5, weight: 0.12, stack: true, max: 20, kcal: 450, hot: true, desc: '450 kcal。一碗热面能救命。' },
   elec:   { name: '电解质泡腾片', cat: 'food', price: 25, weight: 0.05, stack: true, max: 5, desc: '每片：喝水时额外恢复水分，缓解疲劳。' },

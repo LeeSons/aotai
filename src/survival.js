@@ -71,7 +71,7 @@ export const STATUS = {
   blanket:  { name: '保温毯', bad: false, desc: '裹着保温毯，热量流失大幅减少。' },
   ibu:      { name: '布洛芬', bad: false, desc: '止痛中，伤痛与头痛的影响减轻。' },
   elec:     { name: '电解质', bad: false, desc: '电解质平衡，水分和精力消耗减缓。' },
-  hotmeal:  { name: '饱暖', bad: false, desc: '刚吃了热食，身体暖和。' },
+  hotmeal:  { name: '饱暖', bad: false, desc: '刚吃了热食 / 喝了热水，从里往外暖和。' },
 };
 
 // ---------------- 生存 ----------------
@@ -79,7 +79,7 @@ export class Survival {
   constructor(inv) {
     this.inv = inv;
     this.health = 100; this.stamina = 100; this.energy = 100; this.satiety = 85; this.hydration = 90;
-    this.core = 37.0; this.wet = 0; this.mental = 85; this.altSick = 0; this.acclim = 0;
+    this.core = 37.0; this.fuel = 0; this.wet = 0; this.mental = 85; this.altSick = 0; this.acclim = 0;
     this.status = {};
     this.exhausted = false;
     this.cause = '';
@@ -92,7 +92,7 @@ export class Survival {
     this.stats = { minCore: 37, maxAlt: 0, kcal: 0, water: 0, dangers: 0, falls: 0 };
   }
   serialize() {
-    const o = {}; for (const k of ['health', 'stamina', 'energy', 'satiety', 'hydration', 'core', 'wet', 'mental', 'altSick', 'acclim', 'paradoxDone', 'coma', 'waterSat']) o[k] = this[k];
+    const o = {}; for (const k of ['health', 'stamina', 'energy', 'satiety', 'hydration', 'core', 'wet', 'mental', 'altSick', 'acclim', 'paradoxDone', 'coma', 'waterSat', 'fuel']) o[k] = this[k];
     o.status = JSON.parse(JSON.stringify(this.status)); o.stats = { ...this.stats }; return o;
   }
   restore(s) { Object.assign(this, s); this.status = JSON.parse(JSON.stringify(s.status)); this.stats = { ...s.stats }; this.cause = ''; }
@@ -147,17 +147,22 @@ export class Survival {
       insul += inv.has('pad') ? 5 : -5;
     }
     if (this.status.blanket) insul += 10;
-    let heat = 0;
-    if (env.sleeping || this.coma) heat = 0;
-    else if (env.warming) heat = 14;
-    else if (env.sprint) heat = 12;
-    else if (env.moving) heat = env.uphill > 0.15 || env.stone ? 9 : 6;
-    if (this.status.warmer) heat += 4;
-    if (this.status.hotmeal) heat += 3;
-    let passiveHeat = (this.status.warmer ? 4 : 0) + (this.status.hotmeal ? 3 : 0);
-    if (this.core < 36 && this.core > 31 && !this.coma) { heat += 3; passiveHeat += 3; } // 寒战产热
-    if (this.status.fever) heat += 6;
+    let act = 0;
+    if (env.sleeping || this.coma) act = 0;
+    else if (env.warming) act = 14;
+    else if (env.sprint) act = 12;
+    else if (env.moving) act = env.uphill > 0.15 || env.stone ? 9 : 6;
+    // 身体的热量归根结底来自吃下去的东西，冷的热的都一样：
+    // 刚吃下的食物在消化吸收的一两个小时里让身体多产热（高热量的巧克力 / 能量棒 / 牛肉干都算）；
+    // 吃饱的人代谢旺盛、更扛冻，饿肚子的人产热不足，断粮时连寒战都打不起来。
+    const food = this.coma ? 0 : this.digestHeat();
+    const fed = this.coma ? 0 : this.fedHeat();
+    const shiver = this.core < 36 && this.core > 31 && !this.coma ? (this.satiety > 5 ? 3 : 1.5) : 0; // 寒战产热
+    const gear = (this.status.warmer ? 4 : 0) + (this.status.hotmeal ? 3 : 0);
+    const passiveHeat = gear + food + fed + shiver;
+    const heat = act + passiveHeat + (this.status.fever ? 6 : 0);
     this.teff = teff; this.windBlock = windBlock; this.rainBlock = rainBlock;
+    this.heatParts = { act, food, fed, shiver, gear };
     return { balance: teff + insul + heat - 21, passive: teff + insul + passiveHeat - 21, rain, snow, wind, air, windBlock, rainBlock, insul, heat };
   }
 
@@ -217,6 +222,7 @@ export class Survival {
     this.satiety = Math.max(0, this.satiety - kcal * FOOD_SHARE / 20 * PER_H * dt);
     this.stats.kcal += kcal * PER_H * dt;
     this.waterSat = Math.max(0, (this.waterSat || 0) - 2 * PER_H * dt);
+    this.fuel = Math.max(0, (this.fuel || 0) - 220 * PER_H * dt);   // 大约两三个小时消化完一顿
 
     // ---- 口渴 ----
     // 升/游戏小时。山上气温低，稳步徒步每小时只需 0.12–0.16 L：喝足水后连续爬坡半天不喝会很渴，但远不致命；
@@ -362,6 +368,13 @@ export class Survival {
   }
 
   // 喝水能暂时压一压饥饿感（“水饱”），但只能顶一点点：0.25 L ≈ 2.5 点饱食度，
+  // 消化产热：刚吃下的热量在接下来一两个小时里慢慢释放（最多 +2）
+  digestHeat() { return Math.min(2, (this.fuel || 0) / 250); }
+  // 营养状态：吃饱 +1.5，半饱 0，饿到底 −3
+  fedHeat() { const s = this.satiety; return s <= 0 ? -3 : clamp((s - 25) / 25, -1, 1) * 1.5; }
+  // 吃东西（kcal）：除了饱食度，还进入“消化池”持续产热
+  ingest(kcal) { this.fuel = Math.min(900, (this.fuel || 0) + kcal); }
+
   // 最多垫到 45，而且一小时里通过喝水补的饱食度总共也就两三点——不能拿水当饭吃。
   drinkFill(L) {
     const g = Math.min(L * 10, 6 - (this.waterSat || 0), 45 - this.satiety);

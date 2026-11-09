@@ -1030,7 +1030,7 @@ class Game {
     if (tw < 8 && chill >= 0.08) {
       const cold = s.core < 35.5;
       this.msg(`${left}水冰得扎牙，灌下去浑身一激灵（核心体温 −${fmt(chill, 1)}℃）。${cold ? '你本来就在失温，这口冰水让你抖得更厉害了！' : ''}`, cold ? 'danger' : 'warn');
-      this.tip('coldwater', inv.has('stove') ? '天冷时水壶里的水接近冰点，直接喝会拉低核心体温。有炉子就在背包里选「喝热水暖身」，或者小口慢慢喝。' : '天冷时水壶里的水接近冰点，直接喝会拉低核心体温。小口慢慢喝，别在身体发冷时猛灌。');
+      this.tip('coldwater', '天冷时水壶里的水接近冰点，一大口灌下去会拉低核心体温。小口慢慢喝，别在身体发冷时猛灌；冷的时候吃点高热量的东西（巧克力、能量棒）更能暖身' + (inv.has('stove') ? '，有炉子也可以在背包里选「喝热水暖身」。' : '。'));
     } else this.msg(left + (fill > 0.5 ? '空肚子灌点水，饿得没那么慌了。' : ''), 'info');
   }
 
@@ -1053,7 +1053,9 @@ class Game {
       inv.useGas(); inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
     }
     inv.consume(id);
+    const cold = s.core < 36.5 || s.balance < 0;
     s.satiety = Math.min(100, s.satiety + it.kcal / 20 * (hot || !it.hot ? 1 : 0.85));
+    s.ingest(it.kcal);
     if (it.dry) s.hydration = Math.max(0, s.hydration - 4);
     if (it.quick) s.stamina = Math.min(s.maxStamina(), s.stamina + 25);
     if (id === 'jerky') s.mental = Math.min(100, s.mental + 3);
@@ -1061,6 +1063,9 @@ class Game {
       s.core = Math.min(37.3, s.core + 0.5); s.mental = Math.min(100, s.mental + 9); s.hydration = Math.min(100, s.hydration + 8);
       s.addStatus('hotmeal', { t: 2 * SEC_PER_GAME_HOUR });
       this.msg(`你烧水泡了一份热腾腾的${it.name}，一股暖流从胃里蔓延开来。`, 'good');
+    } else if (cold) {
+      this.msg(`你嚼着冰凉的${it.name}（+${it.kcal} kcal）。热量下了肚，接下来一两个小时身体会多产些热。`, 'good');
+      this.tip('foodheat', '冷的时候吃东西也能暖身：身体的热量来自吃下去的食物，冷的热的都算。巧克力、能量棒、牛肉干这类高热量的东西吃下去，接下来一两个小时产热明显增加；吃饱的人也比饿肚子的人扛冻得多。热食热水暖得更快，但不是必需。');
     } else this.msg(`你吃了${it.name}（+${it.kcal} kcal）。`, 'info');
     this.audio.eat();
     if (this.player.firstPerson === false) this.player.sitting = false;

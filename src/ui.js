@@ -94,7 +94,7 @@ export class UI {
       <div>F9</div><div>（测试用）传送到下一个地标</div>
     </div>
     <p class="muted" style="margin-top:14px">生存要点：冷了及时加衣、出汗前减衣；下雨必须穿冲锋衣；石海慢慢走；起雾时别离开脚下的路迹，看不清就原地等；雷暴时远离山顶并蹲下；羚牛别靠近、别奔跑；在营地补水，水源可能干涸；天黑前扎营。</p>
-    <p class="muted">身体：吃饱后能走大半天才会饿，断粮会越来越虚但不会马上倒下；空肚子喝点水能稍微压一压饿。冷天水壶里的水接近冰点，猛灌会拉低核心体温——有炉子就烧热水喝。坐下休息能回一点精力；真正恢复要靠睡觉。生命在没有伤病、不太饿不太渴、身体不冷时会自己慢慢恢复：走路时约 +1/小时，坐下休息约 +2.5/小时，睡一觉约 +4/小时，吃饱喝足或刚吃过热食更快；急救包能处理擦伤（+15）。</p>`;
+    <p class="muted">身体：吃饱后能走大半天才会饿，断粮会越来越虚但不会马上倒下；空肚子喝点水能稍微压一压饿。体温靠身体自己产热：走路产热最多；身体的热量来自吃下去的东西，冷的热的都算——吃饱了更扛冻，冷的时候嚼块巧克力或能量棒，接下来一两个小时会多产热；饿着肚子产热不足，断粮时连寒战都打不起来。热食热水暖得更快，但不是必需。冷天水壶里的水接近冰点，别在身体发冷时猛灌。坐下休息能回一点精力；真正恢复要靠睡觉。生命在没有伤病、不太饿不太渴、身体不冷时会自己慢慢恢复：走路时约 +1/小时，坐下休息约 +2.5/小时，睡一觉约 +4/小时，吃饱喝足或刚吃过热食更快；急救包能处理擦伤（+15）。</p>`;
   }
 
   // ---------------- 难度 ----------------
@@ -534,6 +534,13 @@ export class UI {
     html += row('水分', `${Math.round(s.hydration)}（缺水 ${fmt((100 - s.hydration) * 0.025, 2)} L）`);
     html += row('核心体温', fmt(s.core, 1) + ' ℃');
     html += row('热平衡', (s.balance >= 0 ? '+' : '') + fmt(s.balance, 1) + (s.balance < -2 ? ' <span style="color:#5aa0e0">正在失温</span>' : s.balance < 0 ? ' <span style="color:#8fc8e8">偏冷（手脚发凉，身体尚能维持）</span>' : s.balance > 14 ? ' <span style="color:#e8913a">出汗</span>' : ' 稳定'));
+    { const hp = s.heatParts || {}, sg = v => (v >= 0 ? '+' : '') + fmt(v, 1), parts = [];
+      if (hp.act) parts.push('活动 ' + sg(hp.act));
+      if (hp.food > 0.05) parts.push('消化 ' + sg(hp.food));
+      if (Math.abs(hp.fed) > 0.05) parts.push((hp.fed > 0 ? '吃饱 ' : '饥饿 ') + sg(hp.fed));
+      if (hp.shiver) parts.push('寒战 ' + sg(hp.shiver));
+      if (hp.gear) parts.push('暖宝宝 / 热食 ' + sg(hp.gear));
+      html += row('产热', parts.length ? parts.join(' · ') : '只有基础代谢'); }
     html += row('体感温度', fmt(s.teff, 0) + ' ℃');
     html += row('衣物保暖值', fmt(th.insul || inv.insulation(), 1));
     html += row('防风 / 防水', `${Math.round((s.windBlock || 0) * 100)}% / ${Math.round((s.rainBlock || 0) * 100)}%`);
