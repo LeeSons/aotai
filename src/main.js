@@ -439,11 +439,11 @@ class Game {
     if (code === 'Space' && this.qte) { this.resolveQTE(true); return; }
     switch (code) {
       case 'KeyC': case 'ControlLeft': {
-        const pl = this.player; if (pl.ko > 0 || pl.sliding) break;
+        const pl = this.player; if (pl.ko > 0 || pl.sliding || pl.flying) break;   // 踏空时 C 是下降
         pl.sitting = false; pl.setStance(pl.stance === 'crouch' ? 'stand' : 'crouch'); break;
       }
       case 'KeyZ': {
-        const pl = this.player; if (pl.ko > 0 || pl.sliding) break;
+        const pl = this.player; if (pl.ko > 0 || pl.sliding || pl.flying) break;
         pl.sitting = false; pl.setStance(pl.stance === 'prone' ? 'crouch' : 'prone');
         if (pl.stance === 'prone') this.msg('你趴在地上匍匐前进。', 'info'); break;
       }
@@ -496,7 +496,7 @@ class Game {
     if (this.god) {
       s.fill();
     }
-    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」踏空飞行，松开落下。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格踏空飞行，松开落下。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后按住「跳」/「蹲」上升下降，按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后空格上升、C 下降、WASD 前后左右，按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
   }
 
   gfxMenu(back) {
@@ -926,6 +926,9 @@ class Game {
         if (ev.pole && Math.random() < 0.6) this.audio.pole();
       } else if (ev.type === 'stomp') {
         this.audio.step(this.snowLocal > 0.3 ? 'snow' : 'grass', 5);
+      } else if (ev.type === 'takeoff') {
+        this.tip('fly', IS_TOUCH ? '你踏空飞了起来！按住「跳」上升、按住「蹲」下降，摇杆前后左右飞，开「跑」加速。按住「蹲」一直降到地面才会落地。'
+          : '你踏空飞了起来！空格上升、C 下降，WASD 前后左右飞，按住 Shift 加速。按住 C 一直降到地面才会落地。');
       } else if (ev.type === 'knockdown') {
         this.camShake = Math.max(this.camShake, 6);
       } else if (ev.type === 'jump') {

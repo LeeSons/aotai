@@ -8,8 +8,9 @@ export const SPEED = { walk: 3.3, run: 7.0, crouch: 1.6, prone: 0.7 };
 const GRAVITY = 22;
 // 无敌模式：快跑 10 m/s；起跳初速 √(2gh) → 跳起 2 米
 const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
-// 无敌模式：长按空格（超过 0.25 秒）踏空飞行，向上 6 m/s；最高离地 150 米，松开就落下
-const FLY_HOLD = 0.25, FLY_UP = 6, FLY_MAX = 150;
+// 无敌模式：长按空格（超过 0.25 秒）起飞，之后一直踏空悬停；
+// 前后左右 5 m/s、上下 6 m/s，按住快跑都是 10 m/s；最高离地 150 米；按住下降落到地面才退出飞行
+const FLY_HOLD = 0.25, FLY_SPEED = 5, FLY_UP = 6, FLY_MAX = 150;
 export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷', fly: '踏空飞行' };
 
 function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
@@ -261,6 +262,7 @@ export class Player {
     let speed = base * (mods.god ? 1 : mods.speedMult) * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
     if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
+    if (this.flying) speed = (input.sprint ? GOD_RUN : FLY_SPEED) * (analog ? lerp(0.4, 1, aMag) : 1);   // 踏空：前后左右一样快
 
     const gNow = groundAt(p.x, p.z);
     const n = this.terrainNormal(p.x, p.z);
@@ -309,14 +311,17 @@ export class Player {
       if (this.stance !== 'stand') { this.setStance('stand'); }
       else if (this.onGround && !this.sliding && mods.canJump) { this.vel.y = mods.god ? GOD_JUMP_V : 6.0; this.onGround = false; this.airborneFrom = p.y; this.events.push({ type: 'jump' }); }
     }
-    // 无敌模式：长按空格踏空飞行（短按仍是普通的 2 米跳）
+    // 无敌模式：长按空格起飞（短按仍是普通的 2 米跳）；起飞后一直踏空，直到按住下降落回地面
+    if (this.flying && !mods.god) { this.flying = false; this.safeFall = true; }   // 半空中关掉无敌：掉下去不摔伤
     this.jumpHoldT = input.jumpHold && !locked ? (this.jumpHoldT || 0) + dt : 0;
-    this.flying = !!mods.god && this.jumpHoldT > FLY_HOLD && this.stance === 'stand';
+    if (!this.flying && mods.god && this.jumpHoldT > FLY_HOLD && this.stance === 'stand' && !this.sliding) {
+      this.flying = true; this.onGround = false; this.airborneFrom = p.y; this.events.push({ type: 'takeoff' });
+    }
     if (this.flying) {
-      if (this.onGround) { this.onGround = false; this.airborneFrom = p.y; }
-      this.sliding = false; this.slideSpeed = 0;
-      const target = p.y - gNow.y < FLY_MAX ? FLY_UP : 0;
-      if (this.vel.y < target) this.vel.y = Math.min(target, this.vel.y + (GRAVITY + 28) * dt);
+      this.sliding = false; this.slideSpeed = 0; this.sitting = false;
+      const vs = input.sprint ? GOD_RUN : FLY_UP;
+      const want = ((input.jumpHold ? 1 : 0) - (input.crouch ? 1 : 0)) * vs;   // 空格上升、C 下降，都不按就悬停
+      this.vel.y = lerp(this.vel.y, want, 1 - Math.exp(-6 * dt));
     }
 
     // ------- 水平移动 + 台阶 -------
@@ -345,14 +350,25 @@ export class Player {
         this.vel.y = 0;
       }
     }
-    if (!this.onGround) {
+    if (this.flying) {
+      p.y += this.vel.y * dt;
+      if (p.y > g.y + FLY_MAX) { p.y = g.y + FLY_MAX; if (this.vel.y > 0) this.vel.y = 0; }
+      if (p.y <= g.y) {
+        p.y = g.y;
+        if (input.crouch) {   // 主动降到地面：落地，退出飞行
+          this.flying = false; this.onGround = true; this.vel.y = 0;
+          this.events.push({ type: 'land', speed: 0, height: 0 });
+        } else if (this.vel.y < 0) this.vel.y = 0;   // 贴着地面掠过，仍然踏空
+      }
+    } else if (!this.onGround) {
       this.vel.y -= GRAVITY * dt;
       p.y += (this.vel.y + 0.5 * GRAVITY * dt) * dt;   // 匀加速的精确积分，跳跃高度不随帧率变化
       if (p.y <= g.y) {
         const impact = -this.vel.y;
         p.y = g.y; this.onGround = true;
         this.events.push({ type: 'land', speed: impact, height: this.airborneFrom - g.y });
-        if (impact > 12.5) this.events.push({ type: 'impact', speed: impact, from: 'fall' });
+        if (impact > 12.5 && !this.safeFall) this.events.push({ type: 'impact', speed: impact, from: 'fall' });
+        this.safeFall = false;
         this.vel.y = 0;
       }
     }
