@@ -84,9 +84,9 @@ export class UI {
       <div>B</div><div>打开背包：吃喝、穿脱衣物、用药、烧水、求救（时间暂停）</div>
       <div>M</div><div>查看全线地图与海拔剖面（需要纸质地图或导航设备）</div>
       <div>E</div><div>互动：取水、查看路牌、进庙避风、与驴友交谈、购买补给；野外下雨、有积雪或雨后有水洼时，按 E 就地取水（接雨水 / 融雪 / 舀积水）</div>
-      <div>T</div><div>扎营：搭帐篷睡觉 / 露宿 / 休息一小时</div>
+      <div>T</div><div>扎营：搭帐篷睡觉 / 露宿 / 休息一小时 / 带了打火机可以捡柴生火</div>
       <div>R</div><div>原地坐下休息（快速恢复体力，慢慢回一点精力和生命）</div>
-      <div>1 / 2 / 3</div><div>快速喝水 / 吃零食 / 用急救包</div>
+      <div>1 / 2 / 3</div><div>快速喝水（身上冷时优先喝保温壶里的热水）/ 吃零食 / 用急救包</div>
       <div>F</div><div>开关头灯</div>
       <div>G</div><div>开关小地图（需要 GPS 或手机离线轨迹）</div>
       <div>Q</div><div>使用防兽喷雾</div>
@@ -548,7 +548,7 @@ export class UI {
     html += row('精神', Math.round(s.mental) + ' / 100');
     html += row('高反', Math.round(s.altSick) + '（适应度 ' + Math.round(s.acclim / 0.6 * 100) + '%）');
     html += row('负重', `${fmt(inv.weight())} / ${inv.backpack.cap} kg（${inv.backpack.name}）`);
-    html += row('饮水', `${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${inv.waterRaw > 0.01 ? `（其中 ${fmt(inv.waterRaw, 2)}L 未处理生水）` : ''}`);
+    html += row('饮水', `${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${inv.waterRaw > 0.01 ? `（其中 ${fmt(inv.waterRaw, 2)}L 未处理生水）` : ''}${inv.has('thermos') ? `；保温壶 ${fmt(inv.flask, 2)} L${inv.flask >= 0.02 ? ` ${Math.round(inv.flaskT)}℃` : ''}` : ''}`);
     { const gl = inv.gasLeft(); html += row('燃气', inv.has('stove') ? `${fmt(gl / 6, 1)} 罐（约能融 ${Math.floor(gl + 1e-6)} 锅雪，或烧 ${Math.floor(gl / 0.1 + 1e-6)} 杯热水）` : '无炉具'); }
     html += `<h4>伤病与状态</h4>`;
     const labels = s.labels();
@@ -592,6 +592,16 @@ export class UI {
       if (g.fieldWater().any) add('就地取水…', () => { this.hide('screen-inv'); g.fieldWaterMenu(); }, inv.water >= inv.waterCap - 0.05);
       c.appendChild(ctl); box.appendChild(c);
     }
+    if (inv.has('thermos')) {
+      const c = el('div', 'card'), T = inv.flaskT;
+      const feel = inv.flask < 0.02 ? '空的。' : T >= 65 ? '还很烫，能直接泡热食。' : T >= 48 ? '热乎乎的，喝着正好。' : T >= 33 ? '已经只是温水了。' : '已经凉透了。';
+      c.innerHTML = `<div class="nm">保温壶 ${fmt(inv.flask, 2)} L${inv.flask >= 0.02 ? ` · 约 ${Math.round(T)}℃` : ''}</div><div class="meta"><span>容量 1 L</span></div><div class="ds">${feel}</div>`;
+      const ctl = el('div', 'ctl');
+      const add = (l, fn, dis) => { const b = el('button', 'btn small', l); b.disabled = !!dis; b.onclick = () => { fn(); this.renderInventory(); }; ctl.appendChild(b); };
+      add('喝一口 (0.25L)', () => g.flaskDrink(0.25), inv.flask < 0.02);
+      if (inv.has('stove')) add('烧开水灌满', () => g.fillFlask(), inv.gasLeft() <= 0 || inv.water < 0.05 || inv.flask > inv.flaskCap - 0.05);
+      c.appendChild(ctl); box.appendChild(c);
+    }
     const ids = Object.keys(inv.items);
     const cats = { cloth: '衣物（穿着时计入保暖）', food: '食物', med: '药品急救', cook: '炊具', nav: '导航通讯', gear: '技术装备', shelter: '宿营' };
     for (const cat in cats) {
@@ -605,6 +615,7 @@ export class UI {
         if (it.kcal) {
           btns.push(['吃', () => g.eat(id, false)]);
           if (it.hot && inv.has('stove')) btns.push(['热着吃', () => g.eat(id, true), inv.gasLeft() <= 0 || inv.water < 0.3]);
+          if (it.hot && inv.has('thermos')) btns.push(['保温壶热水泡', () => g.eat(id, 'flask'), inv.flask < 0.3 || inv.flaskT < 65]);
         }
         if (id === 'elec') btns.push(['冲一杯', () => g.useItem(id), inv.water < 0.4]);
         if (['firstaid', 'bandage', 'ibu', 'diamox', 'smecta', 'warmer', 'blanket', 'power', 'deet'].includes(id) && id !== 'deet') btns.push(['使用', () => g.useItem(id)]);

@@ -162,10 +162,10 @@ export class TouchControls {
         <div>跑</div><div>快跑开关（消耗大量体力；松开摇杆自动停下）</div>
         <div>蹲 / 趴</div><div>蹲下抵御阵风、石海更稳；趴下在狂风中最稳；打雷时要蹲，别趴</div>
         <div>互动</div><div>靠近水源、路牌、驴友、补给点时，画面下方会出现互动按钮；野外下雨、有积雪或雨后有水洼时，会出现“就地取水”（接雨水 / 融雪 / 舀积水）</div>
-        <div>喝水 / 进食 / 急救</div><div>快速喝一口水 / 吃零食 / 用急救包</div>
+        <div>喝水 / 进食 / 急救</div><div>快速喝一口水（身上冷时优先喝保温壶）/ 吃零食 / 用急救包</div>
         <div>登山杖 / 头灯</div><div>展开收起登山杖（雷暴时记得收起）/ 开关头灯</div>
         <div>取暖（按住）</div><div>原地跳动取暖：产热但极耗体力</div>
-        <div>休息 / 扎营</div><div>原地坐下恢复体力 / 搭帐篷睡觉、露宿或休息一小时</div>
+        <div>休息 / 扎营</div><div>原地坐下恢复体力 / 搭帐篷睡觉、露宿、休息一小时，带了打火机可以捡柴生火</div>
         <div>喷雾</div><div>对冲过来的羚牛使用防兽喷雾</div>
         <div>更多</div><div>切换第一 / 第三人称、开关小地图、全屏</div>
         <div>背包 / 地图 / Ⅱ</div><div>吃喝穿衣用药求救 / 全线地图与海拔剖面 / 暂停（都会暂停时间）</div>
@@ -325,7 +325,7 @@ export class TouchControls {
     this.set('spray', 'dim', !inv.has('spray'));
     this.set('rest', 'on', pl.sitting);
     this.set('warm', 'on', pl.warming);
-    this.set('drink', 'dim', inv.water < 0.02);
+    this.set('drink', 'dim', inv.water < 0.02 && !(inv.flask > 0.02));
     this.text('drink', '.bd', inv.water.toFixed(1) + 'L');
     const near = g.nearInteract && !g.qte ? g.nearInteract.label : '';
     this.set('use', 'show', !!near);

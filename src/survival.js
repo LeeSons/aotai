@@ -14,16 +14,19 @@ export class Inventory {
     this.worn = new Set();
     this.water = 0;     // 升
     this.waterRaw = 0;  // 其中未处理的生水
+    this.flask = 0;     // 保温壶里的水（升）
+    this.flaskT = 0;    // 保温壶水温（℃）
     this.battery = { gps: 100, lamp: 100, phone: 100 };
     this.money = 0;
     this.tentDamaged = false;
     this.ponchoHP = 100;
   }
-  serialize() { return { backpack: this.backpack && this.backpack.id, items: { ...this.items }, uses: { ...this.uses }, worn: [...this.worn], water: this.water, waterRaw: this.waterRaw, battery: { ...this.battery }, money: this.money, tentDamaged: this.tentDamaged, ponchoHP: this.ponchoHP }; }
+  serialize() { return { backpack: this.backpack && this.backpack.id, items: { ...this.items }, uses: { ...this.uses }, worn: [...this.worn], water: this.water, waterRaw: this.waterRaw, battery: { ...this.battery }, money: this.money, tentDamaged: this.tentDamaged, ponchoHP: this.ponchoHP, flask: this.flask, flaskT: this.flaskT }; }
   restore(s, BACKPACKS) {
     this.backpack = BACKPACKS.find(b => b.id === s.backpack) || null;
     this.items = { ...s.items }; this.uses = { ...s.uses }; this.worn = new Set(s.worn);
     this.water = s.water; this.waterRaw = s.waterRaw || 0; this.battery = { phone: 100, ...s.battery }; this.money = s.money; this.tentDamaged = s.tentDamaged; this.ponchoHP = s.ponchoHP;
+    this.flask = s.flask || 0; this.flaskT = s.flaskT || 0;
   }
   has(id) { return (this.items[id] || 0) > 0; }
   add(id, n = 1) {
@@ -31,10 +34,11 @@ export class Inventory {
     if (ITEM_USES[id]) this.uses[id] = (this.uses[id] || 0) + ITEM_USES[id] * n;
   }
   get waterCap() { return (this.items.bottle || 0) * 1.0; }
+  get flaskCap() { return this.has('thermos') ? 1 : 0; }
   weight() {
     let w = this.backpack ? this.backpack.weight : 0;
     for (const id in this.items) { const it = ITEMS[id]; if (it) w += it.weight * this.items[id]; }
-    return w + this.water;
+    return w + this.water + this.flask;
   }
   // 消耗一次“次数型”物品；返回是否成功
   use(id) {
@@ -139,6 +143,8 @@ export class Survival {
       wind *= weak ? 0.6 : 0.3; rain *= weak ? 1 : 0.15; snow *= weak ? 1 : 0.15;
       if (!weak) air += 2;
     }
+    // 火堆的辐射热：坐在火边，前胸烤得发烫，后背还是凉的——整体相当于周围暖和了十几度
+    if (env.nearFire && !env.inTent) air += 14;
     const chill = Math.pow(Math.max(wind - 1, 0), 1.45) * 0.6 * (1 - windBlock);
     const teff = air - chill - this.wet * 0.06;
     // 保温
@@ -217,6 +223,7 @@ export class Survival {
       let dry = (0.1 + th.wind * 0.015) * (env.airTemp > 8 ? 1.4 : 0.8) * (this.inv.worn.has('base') ? 1.5 : 1);
       if (act > 0 && this.core > 36) dry *= 1.8;          // 走动时体温把湿气往外推，衣服干得快得多
       if (env.sleeping && env.inTent) dry = 0.22;
+      if (env.nearFire) dry = Math.max(dry, 2);          // 火边烤衣服：湿透的衣服两个来小时就能烤干
       this.wet = Math.max(0, this.wet - dry * dt * (1 - precip * 3));
     }
     // 雨衣在大风里破损
@@ -235,6 +242,16 @@ export class Survival {
     this.stats.kcal += kcal * PER_H * dt;
     this.waterSat = Math.max(0, (this.waterSat || 0) - 2 * PER_H * dt);
     this.fuel = Math.max(0, (this.fuel || 0) - 220 * PER_H * dt);   // 大约两三个小时消化完一顿
+
+    // ---- 保温壶 ----
+    // 真空壶也会慢慢凉：按牛顿冷却，时间常数满壶约 16 小时（装得越少凉得越快）。
+    // 0℃ 的山上，92℃ 的开水 6 小时后约 63℃，12 小时后约 43℃。
+    const inv = this.inv;
+    if (inv.flask > 0.001) {
+      const amb = env.airTemp + (env.inTent ? 7 : 4);
+      const tau = 16 * (0.45 + 0.55 * Math.min(1, inv.flask / Math.max(inv.flaskCap, 0.1)));
+      inv.flaskT = Math.max(0.5, amb + (inv.flaskT - amb) * Math.exp(-dt * PER_H / tau));
+    }
 
     // ---- 口渴 ----
     // 升/游戏小时。山上气温低，稳步徒步每小时只需 0.12–0.16 L：喝足水后连续爬坡半天不喝会很渴，但远不致命；
@@ -326,6 +343,7 @@ export class Survival {
     if (this.altSick > 50) m -= 0.03;
     if (env.goodWeather && !env.night) m += 0.05;
     if (env.shelter || env.inTent) m += 0.03;
+    if (env.nearFire) m += 0.06;
     if (env.sleeping) m += 0.04 * (env.sleepQ || 1);
     m -= 0.008; // 孤独
     this.mental = clamp(this.mental + m * dt, 0, 100);

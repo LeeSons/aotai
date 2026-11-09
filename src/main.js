@@ -18,6 +18,8 @@ const $ = (id) => document.getElementById(id);
 const DN = makeNoise(31337);
 // 树冠遮蔽（挡风雨、挡冰雹）；土质地表（雨后成泥）
 const CANOPY = { forest: 1, gully: 1, dead: 0.4 };
+// 附近能捡到多少柴：林子里最多，枯木林的站杆最好烧；林线以上只有零星灌木，石海山脊几乎没有
+const FUEL = { forest: 1, dead: 1.15, gully: 0.85, meadow: 0.3, ridge: 0.08, pillars: 0.06, stone: 0.03, cliff: 0.05 };
 const SOIL = { forest: 1, gully: 1, dead: 0.85, meadow: 0.6 };
 
 // ---------- 后期处理着色器 ----------
@@ -224,6 +226,7 @@ class Game {
     this.seed = seed;
     this.rng = mulberry32(seed);
     // 清理旧对象
+    this.clearFire(); this.woodPile = null;
     if (this.world) { this.scene.remove(this.world.group); }
     if (this.hazards) this.hazards.dispose();
     for (const m of this.npcMeshes) this.scene.remove(m);
@@ -267,6 +270,7 @@ class Game {
     inv.backpack = BACKPACKS.find(b => b.id === cart.backpack);
     for (const id in cart.items) inv.add(id, cart.items[id]);
     inv.water = inv.waterCap;
+    inv.flask = inv.flaskCap; inv.flaskT = 95;   // 塘口村的农家乐给保温壶灌满了开水
     inv.money = moneyLeft;
     this.gameMin = Math.round(SEASONS[this.seasonKey].sunrise * 60 + 50);
     // 出发前按山下的气温穿衣：没有人会穿着一件速干衣走出冬天的塘口村
@@ -449,7 +453,7 @@ class Game {
       case 'KeyT': this.campMenu(); break;
       case 'KeyQ': this.useSpray(); break;
       case 'KeyH': document.exitPointerLock && document.exitPointerLock(); ui.modal('操作说明', ui.helpHTML()); break;
-      case 'Digit1': this.drink(0.25); break;
+      case 'Digit1': this.quickDrink(); break;
       case 'Digit2': this.quickEat(); break;
       case 'Digit3': if (this.inv.has('firstaid')) this.useItem('firstaid'); else this.msg('你没有急救包。', 'warn'); break;
       case 'F9': this.debugNext(); break;
@@ -506,6 +510,7 @@ class Game {
     this.player.model.visible = false;
     this.player.lamp.intensity = 0;
     if (this.campTent) { this.scene.remove(this.campTent); this.campTent = null; }
+    this.clearFire();
     this.gameMin = 6 * 60 + 20;
     this.weather.cur = 'clear'; this.weather.next = null; this.weather.recompute(); this.weather.snowCover = 0;
     this.terrain.clearAll();
@@ -593,7 +598,8 @@ class Game {
     this.night = night;
     const lamp = this.lampOn && this.inv && this.inv.battery.lamp > 0;
     this.darkness = smoothstep(0.02, -0.12, sunY) * (W.p.cloud > 0.8 ? 1 : 0.85);
-    const dark = this.darkness > 0.7 && !lamp && P.x > 5 && P.x < ROUTE_LENGTH - 30;
+    const nearFire = this.nearFire();
+    const dark = this.darkness > 0.7 && !lamp && !nearFire && P.x > 5 && P.x < ROUTE_LENGTH - 30;
     // 开阔台地上可以离开路迹走一段，但走远了照样会迷失方向（起雾时四面八方都一样）
     const lost = ti.ad > (ti.type === 'cliff' || ti.type === 'ridge' ? 18 : 30 + openAt(P.x) * 45) && P.x > 15 && P.x < ROUTE_LENGTH - 20;
     // 断崖边缘提示（大雾中只能靠声音）
@@ -617,7 +623,7 @@ class Game {
       airTemp: air, wind: this.windLocal, rain: L.rain, snow: L.snow, hail: L.hail, damp: W.p.damp * this.fogK,
       fog: this.fogK, night, altitude: alt, moving: pl.moving && !this.sleeping, sprint: pl.sprinting, uphill: pl.uphill,
       stone: (ti.type === 'stone' || ti.type === 'pillars') && pl.moving, mud, sleeping: false, inTent: false, shelter, resting: pl.sitting,
-      stance: pl.stance, wetGround: W.wetGround, warming: pl.warming,
+      stance: pl.stance, wetGround: W.wetGround, warming: pl.warming, nearFire,
       lost, severe: !!W.p.severe && wxK > 0.6, goodWeather: key === 'clear' || key === 'cloudy',
       snowGlare: this.snowLocal > 0.4 && sunY > 0.15 && W.p.cloud < 0.6, poles: pl.polesOut, dark, snowCover: this.snowLocal,
     };
@@ -817,6 +823,7 @@ class Game {
       this.track.push(this.lastTrack); if (this.track.length > 90) this.track.shift();
       if (!this.trackAll.length || Math.hypot(this.gpsPos.x - this.trackAll[this.trackAll.length - 1][0], this.gpsPos.z - this.trackAll[this.trackAll.length - 1][1]) > 25) this.trackAll.push([this.gpsPos.x, this.gpsPos.z]);
     }
+    this.updateFire(sdt, (t) => this.msg(t, 'info'));
     // 电量
     const coldBat = this.airTemp < 0 ? 1.5 : 1;
     if (inv.has('gps') && this.gpsOn) inv.battery.gps = Math.max(0, inv.battery.gps - 1.6 / SEC_PER_GAME_HOUR * sdt * coldBat);
@@ -964,6 +971,10 @@ class Game {
       if (d < 4 && d < bd) { bd = d; best = { type: 'npc', npc: n, label: n.ranger ? '与管理站工作人员交谈' : '与驴友交谈' }; }
       const m = this.npcMeshes[i]; if (m && d < 20) m.rotation.y = Math.atan2(P.x - n.x, P.z - n.z);
     });
+    if (this.fire && this.fire.left > 0) {
+      const d = Math.hypot(P.x - this.fire.x, P.z - this.fire.z);
+      if (d < 3.2 && d < bd) { bd = d; best = { type: 'fire', label: `火堆（还能烧约 ${fmt(Math.max(0.1, this.fire.left), 1)} 小时）` }; }
+    }
     // 下撤段溪流：沿着整条溪都能取水
     if (P.x > STREAM.x0 + 30 && P.x < STREAM.x1 - 30) {
       const d = Math.abs(P.z - (routeZ(P.x) + STREAM.off));
@@ -1031,7 +1042,7 @@ class Game {
     if (tw < 8 && chill >= 0.08) {
       const cold = s.core < 35.5;
       this.msg(`${left}水冰得扎牙，灌下去浑身一激灵（核心体温 −${fmt(chill, 1)}℃）。${cold ? '你本来就在失温，这口冰水让你抖得更厉害了！' : ''}`, cold ? 'danger' : 'warn');
-      this.tip('coldwater', '天冷时水壶里的水接近冰点，一大口灌下去会拉低核心体温。小口慢慢喝，别在身体发冷时猛灌；冷的时候吃点高热量的东西（巧克力、能量棒）更能暖身' + (inv.has('stove') ? '，有炉子也可以在背包里选「喝热水暖身」。' : '。'));
+      this.tip('coldwater', '天冷时水壶里的水接近冰点，一大口灌下去会拉低核心体温。小口慢慢喝，别在身体发冷时猛灌；冷的时候吃点高热量的东西（巧克力、能量棒）更能暖身' + (inv.has('thermos') ? '，保温壶里有热水就喝热的（按 1 时身上冷会优先喝保温壶）。' : inv.has('stove') ? '，有炉子也可以在背包里选「喝热水暖身」。' : '。'));
     } else this.msg(left + (fill > 0.5 ? '空肚子灌点水，饿得没那么慌了。' : ''), 'info');
   }
 
@@ -1049,7 +1060,14 @@ class Game {
     const inv = this.inv, s = this.surv, it = ITEMS[id];
     if (!inv.has(id)) return;
     if (s.satiety > 96) { this.msg('你吃不下了。', 'info'); return; }
-    if (hot) {
+    if (hot === 'flask') {
+      if (inv.flask < 0.3 || inv.flaskT < 65) { this.msg(inv.flask < 0.3 ? '保温壶里的水不够泡一份了。' : `保温壶里的水只有 ${Math.round(inv.flaskT)}℃，泡不开了。`, 'warn'); return; }
+      inv.flask -= 0.3;
+    } else if (hot === 'fire') {
+      if (inv.water < 0.3) { this.msg('水不够煮一份了。', 'warn'); return; }
+      if (!this.heatUse('fire', 0, 15)) { this.msg('火已经灭了。', 'warn'); return; }
+      inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
+    } else if (hot) {
       if (inv.gasLeft() <= 0 || inv.water < 0.3) { this.msg('没有足够的燃气或水。', 'warn'); return; }
       inv.useGas(0.12); inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
     }
@@ -1063,7 +1081,7 @@ class Game {
     if (hot) {
       s.core = Math.min(37.2, s.core + 0.3); s.mental = Math.min(100, s.mental + 9); s.hydration = Math.min(100, s.hydration + 8);
       s.addStatus('hotmeal', { t: 2 * SEC_PER_GAME_HOUR });
-      this.msg(`你烧水泡了一份热腾腾的${it.name}，一股暖流从胃里蔓延开来。`, 'good');
+      this.msg(hot === 'flask' ? `你用保温壶里的热水泡了一份${it.name}，等了几分钟，热乎乎地吃了下去。` : hot === 'fire' ? `你在火上煮了一份热腾腾的${it.name}，带着一股柴烟味，一股暖流从胃里蔓延开来。` : `你烧水泡了一份热腾腾的${it.name}，一股暖流从胃里蔓延开来。`, 'good');
     } else if (cold) {
       this.msg(`你嚼着冰凉的${it.name}（+${it.kcal} kcal）。热量下了肚，接下来一两个小时身体会多产些热。`, 'good');
       this.tip('foodheat', '冷的时候吃东西也能暖身：身体的热量来自吃下去的食物，冷的热的都算。巧克力、能量棒、牛肉干这类高热量的东西吃下去，接下来一两个小时产热明显增加；吃饱的人也比饿肚子的人扛冻得多。热食热水暖得更快，但不是必需。');
@@ -1089,6 +1107,7 @@ class Game {
     inv.consume(id);
     if (!inv.has(id)) delete inv.uses[id];
     if (inv.water > inv.waterCap) { inv.water = inv.waterCap; inv.waterRaw = Math.min(inv.waterRaw, inv.water); }
+    if (inv.flask > inv.flaskCap) inv.flask = inv.flaskCap;
     this.player.setGear(inv);
     this.msg(`你丢弃了${it.name}，减轻了 ${it.weight} kg。`, 'info');
   }
@@ -1098,28 +1117,170 @@ class Game {
     if (inv.waterRaw < 0.01 || !inv.use('tablet')) return;
     inv.waterRaw = 0; this.msg('你往水壶里投了净水片。等半小时就能放心喝了。', 'good');
   }
-  boilWater() {
-    const inv = this.inv;
-    if (inv.waterRaw < 0.01 || !inv.useGas(clamp(inv.waterRaw * 0.3, 0.1, 2))) return;
-    inv.waterRaw = 0; this.gameMin += 15; this.msg('你把生水烧开了。', 'good');
+  // 有没有能架在火上的锅：炉头的套锅或钛杯（保温壶是真空的，不能放火上烧）
+  hasPot() { return this.inv.has('stove') || this.inv.has('cup'); }
+  nearFire() { const f = this.fire, P = this.player.pos; return !!(f && f.left > 0 && Math.hypot(P.x - f.x, P.z - f.z) < 3.2); }
+  // 烧水做饭的热源：src = 'fire' 用火堆（花时间、烧柴），否则用炉子（耗燃气）
+  heatUse(src, gas, min) {
+    if (src === 'fire') { if (!this.nearFire() || !this.hasPot()) return false; this.fire.left -= min / 60; }
+    else if (!this.inv.useGas(gas)) return false;
+    this.gameMin += min; return true;
   }
-  hotDrink() {
+  boilWater(src) {
+    const inv = this.inv;
+    if (inv.waterRaw < 0.01 || !this.heatUse(src, clamp(inv.waterRaw * 0.3, 0.1, 2), src === 'fire' ? 20 : 15)) return;
+    inv.waterRaw = 0; this.msg(src === 'fire' ? '你把生水架在火上烧开了。' : '你把生水烧开了。', 'good');
+  }
+  hotDrink(src) {
     const inv = this.inv, s = this.surv;
-    if (inv.water < 0.3 || !inv.useGas(0.1)) return;
+    if (inv.water < 0.3 || !this.heatUse(src, 0.1, 10)) return;
     inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
     // 0.3 L 约 70℃ 的水带进身体的热量和一口冰水带走的一样多（方向相反）：核心体温 +0.3℃ 左右
     s.hydration = Math.min(100, s.hydration + 12); s.core = Math.min(37.2, s.core + 0.3 * 33 * 0.028); s.mental = Math.min(100, s.mental + 6);
     s.drinkFill(0.3);
     s.addStatus('hotmeal', { t: SEC_PER_GAME_HOUR });
-    this.gameMin += 10; this.audio.drink();
+    this.audio.drink();
     this.msg('你捧着一杯热水慢慢喝下，冻僵的手指渐渐有了知觉。', 'good');
   }
-  meltSnow() {
+  meltSnow(src) {
     const inv = this.inv;
-    if (inv.water >= inv.waterCap || !inv.useGas()) return;
+    if (inv.water >= inv.waterCap || !this.heatUse(src, 1, src === 'fire' ? 40 : 30)) return;
     const a = Math.min(1.2, inv.waterCap - inv.water);
-    inv.water += a; this.gameMin += 30;
-    this.msg(`你铲了一锅雪，烧化成了 ${fmt(a, 1)} L 水。`, 'good');
+    inv.water += a;
+    this.msg(src === 'fire' ? `你把锅架在火上，一锅一锅地化雪，攒了 ${fmt(a, 1)} L 水。` : `你铲了一锅雪，烧化成了 ${fmt(a, 1)} L 水。`, 'good');
+  }
+
+  // ===================== 篝火 =====================
+  // 能不能生起火，看三样东西：附近有没有柴、柴湿不湿、风大不大（太冷时丁烷打火机也不好打火）
+  fireOdds() {
+    const ti = this.ti || {}, inv = this.inv, W = this.weather, L = this.wxLocal || {};
+    const fuel = (FUEL[ti.type] ?? 0.3) * (this.altitude > 3400 ? 0.6 : 1) * (1 - (this.snowLocal || 0) * 0.5);
+    const wet = clamp((L.rain || 0) * 1.3 + (W.wetGround || 0) * 0.55 + (this.snowLocal || 0) * 0.5 + (L.snow || 0) * 0.6 + (W.p.damp || 0) * (this.fogK || 0) * 3, 0, 1);
+    const wind = this.windLocal || 0, tinder = inv.has('tinder');
+    let p = 0.95 * (1 - wet * (tinder ? 0.45 : 0.85)) * (0.7 + 0.3 * Math.min(1, fuel));
+    p *= wind > 8 ? (tinder ? 0.55 : 0.25) : wind > 6 ? (tinder ? 0.85 : 0.6) : 1;
+    if (this.airTemp < -5) p *= tinder ? 0.9 : 0.7;
+    if ((L.rain || 0) > 0.5 && !this.shelterNow) p *= 0.35;   // 大雨直接把火苗浇灭
+    return { fuel, wet, wind, tinder, p: clamp(p, 0, 0.97), gatherH: clamp(0.4 / Math.max(fuel, 0.05), 0.4, 1.5) };
+  }
+
+  fireStartMenu() {
+    const o = this.fireOdds(), P = this.player.pos;
+    const pile = !!(this.woodPile && Math.hypot(P.x - this.woodPile.x, P.z - this.woodPile.z) < 4);
+    const fuelTxt = o.fuel >= 0.8 ? '林子里到处是枯枝和倒木，柴火充足。' : o.fuel >= 0.25 ? '周围只有零星的灌木枯枝，得走远些、多花点时间才能捡够一堆。' : o.fuel >= 0.1 ? '这里几乎没有能烧的东西，只能在石缝里抠一点枯草和矮灌木。' : '这里是光秃秃的石头和草皮，找不到任何能烧的东西。';
+    const wetTxt = o.wet > 0.6 ? '柴火全是湿的' : o.wet > 0.3 ? '柴火有些潮' : '柴火还算干';
+    const windTxt = o.wind > 8 ? '，风大得火苗根本立不住' : o.wind > 6 ? '，风很大' : '';
+    const chance = o.p > 0.75 ? '很容易点着' : o.p > 0.5 ? '多半能点着' : o.p > 0.25 ? '不太好点' : '很难点着';
+    const btns = [];
+    if (o.fuel >= 0.1) btns.push({ label: pile ? '再试着点火（柴已经捡好了）' : `捡柴生火（约 ${Math.round(o.gatherH * 60)} 分钟）`, action: () => this.startFire(pile) });
+    btns.push({ label: '算了' });
+    this.ui.modal('生火', `<p>${fuelTxt}</p>${o.fuel >= 0.1 ? `<p>${wetTxt}${windTxt}。看样子<b>${chance}</b>${o.tinder ? '（会用掉一块引火块）' : '；带着引火块会好点很多'}。</p>` : ''}<p class="muted">点着之后可以烤火取暖、烤干衣服${this.hasPot() ? '，架锅融雪、烧水、煮东西' : '；没有锅（炉头套锅或钛杯）就没法烧水煮东西'}。</p>`, btns);
+  }
+
+  startFire(pile) {
+    const run = () => {
+      const o = this.fireOdds(), inv = this.inv, P = this.player.pos;
+      if (o.tinder) inv.use('tinder');
+      this.gameMin += 10;
+      if (o.fuel < 0.1) return '<p>你转了一大圈，什么能烧的都没找到。</p>';
+      if (Math.random() >= o.p) {
+        this.woodPile = { x: P.x, z: P.z };
+        const why = o.wind > 6 && o.wet < 0.5 ? '风太大，火苗刚冒头就被吹灭了' : o.wet > 0.3 ? '柴火太湿，只冒了一阵呛人的白烟，怎么也燃不起来' : this.airTemp < -5 ? '打火机冻得打不出火，揣怀里焐热了也只蹿了一下就灭了' : '细枝烧完了，粗柴却没引着';
+        return `<p>${why}。${o.tinder ? '引火块烧完了也没能把柴引着。' : ''}</p><p class="muted">柴还堆在这里，可以再试（T → 捡柴生火）。</p>`;
+      }
+      this.woodPile = null;
+      this.makeFire(P.x, P.y, P.z, 2);
+      this.tip('fire', '现实中秦岭保护区全年严禁野外用火：山火一旦烧起来，人跑不过火。干燥的大风天，火星很容易引燃枯草；离开前一定要把火彻底弄灭。');
+      return `<p>火苗舔着细枝蹿了起来，你小心地往上架粗柴——火生起来了！${o.tinder ? '（用掉一块引火块）' : ''}</p><p class="muted">站在火边就能取暖、烤干衣服。靠近火堆按 E：烤火${this.hasPot() ? '、融雪、烧水、煮东西' : ''}、添柴。这堆柴大约能烧 2 小时。</p>` + this.wildfireCheck(o);
+    };
+    if (pile) { const html = run(); this.ui.modal('生火', html, [{ label: '确定' }]); return; }
+    this.skipTime(this.fireOdds().gatherH, 'collect', { title: '捡柴生火', step: () => {}, done: run });
+  }
+
+  // 干燥的大风天，火星可能被卷进枯草——真实存在的山火风险
+  wildfireCheck(o) {
+    const ti = this.ti || {};
+    if (o.wet > 0.15 || o.wind <= 5 || !['forest', 'dead', 'meadow', 'gully'].includes(ti.type)) return '';
+    if (Math.random() > 0.1 + (o.wind - 5) * 0.04) return '';
+    const s = this.surv; s.damage(3, '扑救山火时烧伤'); s.mental = Math.max(0, s.mental - 10); this.dangerCount++;
+    this.gameMin += 20; this.clearFire();
+    return '<p style="color:#e0483c">一阵风把火星卷进了旁边的枯草里，火苗“呼”地蹿起半人高！你脱下外套拼命扑打，又捧土压了好一阵，才把它扑灭。手上燎起了几个水泡，火堆也被你踩散了。</p><p class="muted">干燥的大风天生火，火星很容易引燃枯草——这正是现实中禁止野外用火的原因。</p>';
+  }
+
+  makeFire(x, y, z, hours) {
+    this.clearFire();
+    const g = new THREE.Group();
+    const logM = new THREE.MeshStandardMaterial({ color: 0x3b2a1d, roughness: 1 });
+    for (let i = 0; i < 5; i++) {
+      const arm = new THREE.Group(); arm.rotation.y = i / 5 * Math.PI * 2;
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, 0.8, 6), logM);
+      log.position.set(0.2, 0.3, 0); log.rotation.z = 0.6; arm.add(log); g.add(arm);
+    }
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.8, 8, 1, true), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+    const core = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 8, 1, true), new THREE.MeshBasicMaterial({ color: 0xffd060, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+    flame.position.y = 0.42; core.position.y = 0.3;
+    const light = new THREE.PointLight(0xff8a3a, 30, 18, 2); light.position.y = 0.9;
+    g.add(flame, core, light);
+    g.position.set(x, y, z);
+    this.scene.add(g);
+    this.fire = { x, z, left: hours, mesh: g, flame, core, light, t: 0 };
+  }
+  clearFire() {
+    if (!this.fire) return;
+    this.scene.remove(this.fire.mesh);
+    this.fire.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this.fire = null;
+  }
+  // 柴火燃烧：一抱柴约烧 2 小时；下雨下雪、风大都烧得更快，大雨可能直接把火浇灭
+  updateFire(dt, note) {
+    const f = this.fire; if (!f) return;
+    const L = this.wxLocal || {};
+    const wetK = (L.rain || 0) + (L.snow || 0) * 0.5;
+    f.left -= dt / SEC_PER_GAME_HOUR * (1 + wetK * 2 + Math.max(0, (this.windLocal || 0) - 5) * 0.12);
+    if ((L.rain || 0) > 0.5 && !this.shelterNow && Math.random() < dt * 0.02) f.left = 0;
+    if (f.left <= 0) {
+      const near = Math.hypot(this.player.pos.x - f.x, this.player.pos.z - f.z) < 40;
+      this.clearFire();
+      if (near && note) note(wetK > 0.3 ? '雨雪把火堆浇灭了，只剩一堆冒着白烟的湿炭。' : '火堆烧尽了，只剩一堆暗红的炭。');
+      return;
+    }
+    f.t += dt;
+    const k = Math.min(1, f.left / 0.4);   // 快烧完时火变小
+    const fl = 0.85 + Math.sin(f.t * 13) * 0.08 + Math.sin(f.t * 7.3) * 0.06 + Math.random() * 0.05;
+    f.flame.scale.set(k * (0.9 + 0.1 * fl), k * fl * 1.1, k * (0.9 + 0.1 * fl));
+    f.core.scale.setScalar(Math.max(0.05, k * fl));
+    f.light.intensity = 30 * k * fl;
+  }
+
+  addWood() {
+    const o = this.fireOdds();
+    if (o.fuel < 0.1) { this.msg('附近已经找不到能烧的东西了。', 'warn'); return; }
+    const P = this.player.pos;
+    this.skipTime(o.gatherH, 'collect', { title: '添柴', step: () => {}, done: () => {
+      if (!this.fire) { this.makeFire(P.x, P.y, P.z, 2); return '<p>等你抱着柴回来，火已经快灭了。好在炭还有余温，你吹了几口，又把它引着了。</p>' + this.wildfireCheck(o); }
+      this.fire.left += 2;
+      return `<p>你又捡回一抱柴架上，火堆还能烧约 ${fmt(this.fire.left, 1)} 小时。</p>` + this.wildfireCheck(o);
+    } });
+  }
+
+  fireMenu() {
+    if (!this.nearFire()) { this.msg('火已经灭了。', 'info'); return; }
+    document.exitPointerLock && document.exitPointerLock();
+    const inv = this.inv, s = this.surv, pot = this.hasPot(), f = this.fire;
+    const again = (fn) => () => { fn(); if (this.nearFire()) setTimeout(() => this.fireMenu(), 60); };
+    const btns = [];
+    btns.push({ label: '烤火 1 小时', action: () => this.skipTime(1, 'rest', { title: '烤火', step: () => {}, done: () => `<p>你凑在火边烤了一个小时。前胸烤得发烫，冻僵的手脚慢慢缓了过来${s.wet > 2 ? `，衣服还有 ${Math.round(s.wet)}% 潮` : '，衣服也烤干了'}。核心体温 ${fmt(s.core, 1)}℃。</p>` }) });
+    if (pot) {
+      btns.push({ label: '喝杯热水（10 分钟）', disabled: inv.water < 0.3, action: again(() => this.hotDrink('fire')) });
+      if ((this.snowLocal || 0) > 0.25) btns.push({ label: '融雪（40 分钟，约 1.2 L）', disabled: inv.water >= inv.waterCap - 0.05, action: again(() => this.meltSnow('fire')) });
+      if (inv.waterRaw > 0.01) btns.push({ label: '烧开生水（20 分钟）', action: again(() => this.boilWater('fire')) });
+      if (inv.has('thermos')) btns.push({ label: '烧开水灌满保温壶（15 分钟）', disabled: inv.water < 0.05 || inv.flask > inv.flaskCap - 0.05, action: again(() => this.fillFlask('fire')) });
+      for (const id of ['meal', 'noodle']) if (inv.has(id)) btns.push({ label: `煮${ITEMS[id].name}（15 分钟）`, disabled: inv.water < 0.3 || s.satiety > 96, action: again(() => this.eat(id, 'fire')) });
+    }
+    btns.push({ label: '添柴（再烧 2 小时）', action: () => this.addWood() });
+    btns.push({ label: '把火弄灭', cls: 'danger', action: () => { this.clearFire(); this.msg('你用土把火堆压灭，又踩了几脚，确认没有一点火星了。', 'info'); } });
+    btns.push({ label: '先这样' });
+    this.ui.modal('火堆', `<p>火堆还能烧约 <b>${fmt(Math.max(0.1, f.left), 1)} 小时</b>。站在火边就能取暖、烤干衣服（现在潮湿度 ${Math.round(s.wet)}%，核心体温 ${fmt(s.core, 1)}℃）。</p>${pot ? '' : '<p class="muted">你没有锅（炉头套锅或钛杯），没法在火上烧水煮东西。</p>'}<p class="muted">水壶 ${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${inv.has('thermos') ? `；保温壶 ${fmt(inv.flask, 2)} L` : ''}</p>`, btns);
   }
 
   // ===================== 就地取水：雨水 / 积雪 / 水洼 =====================
@@ -1158,6 +1319,7 @@ class Game {
       const stove = inv.has('stove') && inv.gasLeft() > 0;
       parts.push(`<p>❄ <b>积雪</b>可以化成水。${stove ? '用炉子融雪最快：30 分钟约 1.2 L，耗一次燃气。' : '没有炉子（或没气了），只能把雪塞进水壶、揣在怀里用体温慢慢化——很慢，还会带走不少体温。'}直接吃雪会让你越吃越冷。</p>`);
       if (stove) btns.push({ label: '用炉子融雪', disabled: full || !hasCup, action: () => this.meltSnow() });
+      if (this.nearFire() && this.hasPot()) btns.push({ label: '在火上融雪（40 分钟）', disabled: full || !hasCup, action: () => this.meltSnow('fire') });
       if (hasCup) btns.push({ label: '体温化雪 1 小时', disabled: full, action: () => this.bodyMelt() });
       btns.push({ label: '直接吃几口雪', cls: 'danger', action: () => this.eatSnow() });
     }
@@ -1171,6 +1333,42 @@ class Game {
 
   // 没有水壶时，接到的水只能当场喝掉
   // tw：水温（直接趴在水边喝冰冷的水会降体温）；接雨水是一小时里慢慢喝的，不额外算
+  // 快捷喝水：身上冷、保温壶里还有热水时先喝热的；水壶空了也喝保温壶
+  quickDrink() {
+    const inv = this.inv, s = this.surv;
+    const warmFlask = inv.flask > 0.02 && inv.flaskT > 40;
+    if (inv.flask > 0.02 && (inv.water < 0.02 || (warmFlask && (s.core < 36.6 || s.balance < 0 || (this.airTemp ?? 10) < 8)))) this.flaskDrink(0.25);
+    else this.drink(0.25);
+  }
+  flaskDrink(L) {
+    const inv = this.inv, s = this.surv;
+    if (inv.flask < 0.02) { this.msg('保温壶已经空了。', 'warn'); return; }
+    const a = Math.min(L, inv.flask), tw = inv.flaskT;
+    inv.flask -= a;
+    s.hydration = Math.min(100, s.hydration + a / 0.025); s.stats.water += a;
+    s.drinkFill(a);
+    // 和冰水同一个算法：水温高于体温就往身体里送热量（0.25 L 85℃ ≈ 核心 +0.3℃），低于体温就带走热量
+    let d = 0;
+    if (tw > 37) { d = Math.max(0, Math.min(37.2 - s.core, a * (tw - 37) * 0.028)); s.core += d; }
+    else s.coldDrink(a, tw);
+    if (tw > 45) { s.addStatus('hotmeal', { t: 0.5 * SEC_PER_GAME_HOUR }); s.mental = Math.min(100, s.mental + 3); }
+    this.audio.drink();
+    const feel = tw >= 65 ? '滚烫的热水，得吹着小口喝' : tw >= 48 ? '热乎乎的水' : tw >= 33 ? '温吞水' : '已经凉透的水';
+    this.msg(`你拧开保温壶喝了 ${fmt(a, 2)} L ${feel}（${Math.round(tw)}℃）${d >= 0.05 ? `，一股热流顺着喉咙下去（核心体温 +${fmt(d, 1)}℃）` : ''}。保温壶还剩 ${fmt(inv.flask, 2)} L。`, tw > 45 ? 'good' : 'info');
+  }
+  // 用炉子把水壶里的水烧开灌进保温壶。海拔越高水的沸点越低：3500 米上 88℃ 左右就开了
+  fillFlask(src) {
+    const inv = this.inv;
+    const a = Math.min(inv.flaskCap - inv.flask, inv.water);
+    if (a < 0.05) return;
+    if (!this.heatUse(src, Math.max(0.05, a * 0.3), src === 'fire' ? 15 : 10)) { this.msg(src === 'fire' ? '火已经灭了。' : '没有燃气了。', 'warn'); return; }
+    const rawFrac = inv.water > 0 ? inv.waterRaw / inv.water : 0;
+    inv.water -= a; inv.waterRaw = Math.max(0, inv.waterRaw - a * rawFrac);
+    const bp = 100 - (this.altitude || 0) / 300;
+    inv.flaskT = (inv.flask * inv.flaskT + a * bp) / (inv.flask + a); inv.flask += a;
+    this.audio.drink();
+    this.msg(`你烧开了 ${fmt(a, 2)} L 水灌进保温壶。这里海拔 ${Math.round(this.altitude || 0)} 米，水 ${Math.round(bp)}℃ 就开了。`, 'good');
+  }
   drinkDirect(L, tw) {
     const s = this.surv; s.hydration = Math.min(100, s.hydration + L / 0.025); s.stats.water += L;
     s.drinkFill(L);
@@ -1359,6 +1557,7 @@ class Game {
       }
       case 'temple': this.templeMenu(it); break;
       case 'field': this.fieldWaterMenu(); break;
+      case 'fire': this.fireMenu(); break;
       case 'shop': this.shopMenu(it); break;
       case 'npc': this.talkNPC(it.npc); break;
     }
@@ -1399,7 +1598,8 @@ class Game {
         this.shopVisited.hotwater = true; const s = this.surv, inv = this.inv;
         s.core = Math.min(37.3, s.core + 0.6); s.hydration = Math.min(100, s.hydration + 15); s.mental = Math.min(100, s.mental + 15);
         inv.water = inv.waterCap; inv.waterRaw = 0;
-        this.ui.modal('平安寺', '<p>老师父什么也没问，给你倒了一碗滚烫的开水，又把你的水壶灌满了。</p><p>“山上下来的？阿弥陀佛。下山的路还长，慢慢走。”</p>');
+        if (inv.flaskCap) { inv.flask = inv.flaskCap; inv.flaskT = 92; }
+        this.ui.modal('平安寺', `<p>老师父什么也没问，给你倒了一碗滚烫的开水，又把你的水壶${inv.flaskCap ? '灌满、保温壶也续满了开水' : '灌满了'}。</p><p>“山上下来的？阿弥陀佛。下山的路还长，慢慢走。”</p>`);
       } });
     }
     this.ui.modal(w.name, `<p>${w.desc}</p><p class="muted">在庙里可以避风避雨。没有帐篷的话，这里是过夜的好地方。</p>`, btns);
@@ -1448,6 +1648,8 @@ class Game {
       btns.push({ label: '搭帐篷睡 3 小时', action: () => this.skipTime(3, 'tent') });
     } else btns.push({ label: `露宿到天亮（${Math.round(dawn)}h）`, cls: 'danger', action: () => this.skipTime(dawn, 'outside') });
     btns.push({ label: '原地休息 1 小时', action: () => this.skipTime(1, 'rest') });
+    if (this.nearFire()) btns.push({ label: '火堆…', action: () => this.fireMenu() });
+    else if (inv.has('lighter')) btns.push({ label: '捡柴生火…', action: () => this.fireStartMenu() });
     btns.push({ label: '取消' });
     this.ui.modal('扎营', `<p>现在是 ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}，气温 ${fmt(this.airTemp, 0)}℃，体感 ${fmt(this.surv.teff, 0)}℃。</p>${warn.map(w => `<p style="color:#e8913a">⚠ ${w}</p>`).join('')}${!hasTent ? '<p style="color:#e0483c">你没有帐篷。在高海拔露宿极其危险。</p>' : ''}`, btns);
   }
@@ -1474,6 +1676,7 @@ class Game {
         env.sleeping = sleepMode; env.inTent = tentMode; env.lost = false;
         if (mode === 'templeSleep' && !env.shelter) env.shelter = { weak: false };
         this.weather.update(1, this.hour(), this.altitude, this.airTemp, (t) => notes.add(t), this.wxK);
+        this.updateFire(1, (t) => notes.add(t));
         // 睡眠质量
         let th = s.thermal(env);
         // 冷醒了就把背包里的保暖衣物都套上（真实的露营习惯：抓绒、羽绒服、帽子穿进睡袋里）
