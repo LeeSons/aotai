@@ -360,14 +360,15 @@ export class Hazards {
       if (thunder && exposed && alt > 3100) {
         S.state = 'warn'; S.t = 3.6;
         game.audio.buzz();
-        game.ui.alert('头发竖了起来，登山杖嗡嗡作响！立刻趴下！', 3);
-        game.msg('空气里弥漫着臭氧味，你的头发根根竖起——雷电即将落下！按 Z 趴下或 C 蹲下，收起登山杖，远离高处！', 'crit');
+        game.ui.alert('头发竖了起来，登山杖嗡嗡作响！立刻蹲下！', 3);
+        game.msg('空气里弥漫着臭氧味，你的头发根根竖起——雷电即将落下！按 C 蹲下（双脚并拢、低头抱膝），别趴下——雷击的地面电流会流过全身。收起登山杖，尽快离开山脊高处！', 'crit');
         game.dangerCount++;
       }
     } else if (S.state === 'warn' && S.t <= 0) {
       S.state = 'idle'; S.t = 16 + this.rng() * 18;
-      const base = game.shelterNow ? 0 : pl.stance === 'prone' ? 0.04 : pl.stance === 'crouch' ? 0.1 : 0.5;
-      const chance = base * H * (pl.polesOut ? 1.4 : 1);
+      // 蹲着（双脚并拢）最安全：人最矮、和地面只有两脚一个接触点；趴着虽矮，但地面电流会从头到脚流过全身
+      const base = game.shelterNow ? 0 : pl.stance === 'crouch' ? 0.07 : pl.stance === 'prone' ? 0.16 : 0.4;
+      const chance = base * H * (pl.polesOut ? 1.2 : 1);
       game.weather.flash = 2; game.weather.spawnBolt(new THREE.Vector3(P.x + (this.rng() - 0.5) * 30, 0, P.z + (this.rng() - 0.5) * 30), P.y);
       game.audio.thunder(30);
       if (this.rng() < chance) {

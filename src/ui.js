@@ -75,7 +75,7 @@ export class UI {
       <div>W A S D</div><div>慢走（默认步行速度）</div>
       <div>Shift</div><div>快跑（消耗大量体力，加重高反；石海里奔跑极易摔倒）</div>
       <div>C</div><div>蹲下 / 蹲行：抵御阵风，不易被羚牛发现，石海更稳</div>
-      <div>Z</div><div>趴下 / 匍匐：狂风和雷暴中最安全，但很慢、贴地更冷更湿</div>
+      <div>Z</div><div>趴下 / 匍匐：狂风中最稳，但很慢、贴地更冷更湿；打雷时别趴，要蹲</div>
       <div>X</div><div>展开 / 收起登山杖：更稳、更抗风、爬坡省力（雷暴时记得收起）</div>
       <div>J（按住）</div><div>原地跳动取暖：产热但极耗体力；环境太冷时只能延缓失温</div>
       <div>鼠标</div><div>转动视角（先点击画面锁定鼠标），滚轮调整第三人称距离</div>
@@ -549,7 +549,7 @@ export class UI {
     html += row('高反', Math.round(s.altSick) + '（适应度 ' + Math.round(s.acclim / 0.6 * 100) + '%）');
     html += row('负重', `${fmt(inv.weight())} / ${inv.backpack.cap} kg（${inv.backpack.name}）`);
     html += row('饮水', `${fmt(inv.water, 2)} / ${fmt(inv.waterCap, 0)} L${inv.waterRaw > 0.01 ? `（其中 ${fmt(inv.waterRaw, 2)}L 未处理生水）` : ''}`);
-    html += row('炉具气量', inv.has('stove') ? inv.gasLeft() + ' 次' : '无');
+    { const gl = inv.gasLeft(); html += row('燃气', inv.has('stove') ? `${fmt(gl / 6, 1)} 罐（约能融 ${Math.floor(gl + 1e-6)} 锅雪，或烧 ${Math.floor(gl / 0.1 + 1e-6)} 杯热水）` : '无炉具'); }
     html += `<h4>伤病与状态</h4>`;
     const labels = s.labels();
     if (!labels.length) html += `<div class="tip">无</div>`;

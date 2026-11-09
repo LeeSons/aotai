@@ -48,10 +48,17 @@ export class Inventory {
   }
   consume(id) { if (!this.has(id)) return false; this.items[id]--; if (this.items[id] <= 0) delete this.items[id]; return true; }
   gasLeft() { return (this.uses.stove || 0) + (this.uses.gas || 0); }
-  useGas() {
-    if (!this.has('stove')) return false;
-    if (this.uses.stove > 0) { this.uses.stove--; return true; }
-    return this.use('gas');
+  // 燃气按“份”计：1 份 ≈ 融一锅雪（1.2 L）；一罐气 6 份。烧一杯热水只要 0.1 份，泡一份热食 0.12 份。
+  useGas(amt = 1) {
+    if (!this.has('stove') || !(this.gasLeft() > 0.001)) return false;
+    let need = amt;
+    const a = Math.min(this.uses.stove || 0, need); this.uses.stove = (this.uses.stove || 0) - a; need -= a;
+    if (need > 0 && this.uses.gas > 0) {
+      const b = Math.min(this.uses.gas, need); this.uses.gas -= b;
+      this.items.gas = Math.ceil(this.uses.gas / ITEM_USES.gas - 1e-9);
+      if (this.items.gas <= 0) { delete this.items.gas; delete this.uses.gas; }
+    }
+    return true;
   }
   insulation() { let s = 4; for (const id of this.worn) s += ITEMS[id].insul || 0; return s; }
 }
@@ -66,8 +73,9 @@ export const STATUS = {
   fever:    { name: '高烧', bad: true, desc: '蜱虫叮咬引发的感染性高烧。布洛芬可暂时缓解。' },
   snowblind:{ name: '雪盲', bad: true, desc: '雪地强光灼伤了眼睛，视线模糊刺痛。' },
   tick:     { name: '蜱虫', bad: true, hidden: true },
+  incub:    { name: '潜伏感染', bad: true, hidden: true },
   diamox:   { name: '抗高反', bad: false, desc: '乙酰唑胺生效中，高反累积大幅减缓。' },
-  warmer:   { name: '暖宝宝', bad: false, desc: '持续发热中。' },
+  warmer:   { name: '暖宝宝', bad: false, desc: '贴在身上持续发热，手和胸口暖和些。' },
   blanket:  { name: '保温毯', bad: false, desc: '裹着保温毯，热量流失大幅减少。' },
   ibu:      { name: '布洛芬', bad: false, desc: '止痛中，伤痛与头痛的影响减轻。' },
   elec:     { name: '电解质', bad: false, desc: '电解质平衡，水分和精力消耗减缓。' },
@@ -143,7 +151,9 @@ export class Survival {
     }
     if (env.sleeping) {
       const bag = inv.has('bagm10') ? -10 : inv.has('bag0') ? 0 : inv.has('bag10') ? 10 : null;
-      if (bag !== null) insul += (25 - bag) * (1 - 0.5 * wetF);
+      // 睡袋标的是“舒适温度”：只穿内衣、垫着防潮垫，帐篷里气温在舒适温度上下还能睡暖；再低 5℃ 左右是极限，
+      // 更冷就得把抓绒、羽绒服都穿进睡袋里
+      if (bag !== null) insul += (14 - bag) * (1 - 0.5 * wetF);
       insul += inv.has('pad') ? 5 : -5;
     }
     if (this.status.blanket) insul += 10;
@@ -158,7 +168,8 @@ export class Survival {
     const food = this.coma ? 0 : this.digestHeat();
     const fed = this.coma ? 0 : this.fedHeat();
     const shiver = this.core < 36 && this.core > 31 && !this.coma ? (this.satiety > 5 ? 3 : 1.5) : 0; // 寒战产热
-    const gear = (this.status.warmer ? 4 : 0) + (this.status.hotmeal ? 3 : 0);
+    // 暖宝宝一片只有几瓦，贴在胸口腋下暖的是局部；一杯热水的热量也就十来千卡——都只是锦上添花
+    const gear = (this.status.warmer ? 1.5 : 0) + (this.status.hotmeal ? 1 : 0);
     const passiveHeat = gear + food + fed + shiver;
     const heat = act + passiveHeat + (this.status.fever ? 6 : 0);
     this.teff = teff; this.windBlock = windBlock; this.rainBlock = rainBlock;
@@ -204,6 +215,7 @@ export class Survival {
     if (precip > 0.02) this.wet = Math.min(100, this.wet + precip * dt);
     if (precip < 0.3) {
       let dry = (0.1 + th.wind * 0.015) * (env.airTemp > 8 ? 1.4 : 0.8) * (this.inv.worn.has('base') ? 1.5 : 1);
+      if (act > 0 && this.core > 36) dry *= 1.8;          // 走动时体温把湿气往外推，衣服干得快得多
       if (env.sleeping && env.inTent) dry = 0.22;
       this.wet = Math.max(0, this.wet - dry * dt * (1 - precip * 3));
     }
@@ -323,7 +335,7 @@ export class Survival {
     const add = (v, c) => { dh -= v; causes.push([v, c]); };
     if (st.bleed) add(0.22, '失血过多');
     if (st.poison) add(0.15, '蛇毒');
-    if (this.satiety <= 0) add(0.02, '饥饿与低血糖');
+    // 断粮不会几天就饿死（人不吃东西能撑几周），它要命的方式是：没力气、产热不足、扛不住冷。
     if (this.hydration <= 0) add(0.15, '严重脱水');
     if (this.core < 32) add((32 - this.core) * 0.09 + 0.05, '失温');
     if (!this.coma && !env.sleeping && (this.core < 30.3 || (this.core < 31.4 && Math.random() < dt * 0.07))) { this.coma = true; hooks.coma && hooks.coma(); }
@@ -411,6 +423,7 @@ export class Survival {
     if (this.core < 34) s *= 0.75;
     if (this.core < 32) s *= 0.65;
     if (this.energy < 15) s *= 0.8;
+    if (this.satiety <= 0) s *= 0.85;   // 低血糖“撞墙”：腿发软
     if (this.exhausted) s *= 0.55;
     if (this.altSick > 70) s *= 0.85;
     if (env.snowCover > 0.3 && !this.inv.has('cramp')) s *= 1 - env.snowCover * 0.25;

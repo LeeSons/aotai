@@ -155,7 +155,7 @@ export const ITEMS = {
   down:   { name: '羽绒服', cat: 'cloth', price: 699, weight: 0.7, wear: true, insul: 12, wetLoss: 0.85, desc: '保暖之王，但一旦被淋湿几乎失去保暖能力。' },
   shell:  { name: '冲锋衣裤(硬壳)', cat: 'cloth', price: 899, weight: 1.0, wear: true, insul: 3, windBlock: 0.7, rainBlock: 0.9, desc: '防风防水。鳌太线上最重要的一件装备。' },
   poncho: { name: '一次性雨衣', cat: 'cloth', price: 15, weight: 0.2, wear: true, insul: 0, windBlock: 0.1, rainBlock: 0.55, fragile: true, desc: '聊胜于无，大风中很快就会被撕烂。下雨时还能铺开来兜雨水。' },
-  hat:    { name: '抓绒帽+手套', cat: 'cloth', price: 99, weight: 0.2, wear: true, insul: 3, desc: '头部和手部散热占了很大比例。' },
+  hat:    { name: '抓绒帽+手套', cat: 'cloth', price: 99, weight: 0.2, wear: true, insul: 3, desc: '头和手露在外面散热很快；手冻僵了连拉链都拉不上。' },
   boots:  { name: '高帮登山鞋', cat: 'cloth', price: 699, weight: 1.2, desc: '护踝防滑，大幅降低在石海崴脚的概率。没有它你穿的是运动鞋。' },
   gaiter: { name: '雪套绑腿', cat: 'cloth', price: 69, weight: 0.2, desc: '防止蜱虫、蛇咬和雨水灌进鞋里。' },
   // ---- 导航通讯 ----
@@ -173,8 +173,8 @@ export const ITEMS = {
   spray:  { name: '防兽喷雾', cat: 'gear', price: 199, weight: 0.3, stack: true, max: 3, desc: '按 Q 喷射，驱赶冲过来的羚牛。每罐可用一次。' },
   // ---- 炊具饮水 ----
   bottle: { name: '水壶(1L)', cat: 'cook', price: 29, weight: 0.15, stack: true, max: 8, desc: '每个增加 1L 携水量。水本身也很重：1 升 = 1 公斤。路上可以在水源灌水，下雨时接雨水，有积雪时融雪。' },
-  stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气，约 6 次）。热食热水暖得更快、提振精神；还能融雪取水、煮沸生水。' },
-  gas:    { name: '备用气罐', cat: 'cook', price: 39, weight: 0.3, stack: true, max: 5, desc: '每罐约 6 次烧水。' },
+  stove:  { name: '炉头+气罐', cat: 'cook', price: 199, weight: 0.5, desc: '烧水做饭（含一罐气）。一罐气约能融 6 锅雪（每锅 1.2 L），或烧 60 杯热水。热食热水提振精神；还能融雪取水、煮沸生水。' },
+  gas:    { name: '备用气罐', cat: 'cook', price: 39, weight: 0.3, stack: true, max: 5, desc: '每罐约能融 6 锅雪，或烧 60 杯热水。' },
   tablet: { name: '净水片(10片)', cat: 'cook', price: 39, weight: 0.05, stack: true, max: 4, desc: '处理生水，防止急性腹泻。' },
   // ---- 食物 ----
   meal:   { name: '脱水米饭', cat: 'food', price: 35, weight: 0.2, stack: true, max: 20, kcal: 650, hot: true, desc: '650 kcal。用热水泡更好吃，冷泡也能吃。' },
@@ -192,7 +192,7 @@ export const ITEMS = {
   smecta: { name: '蒙脱石散', cat: 'med', price: 15, weight: 0.03, desc: '治疗急性腹泻（3 次）。' },
   deet:   { name: '驱虫驱蜱喷雾', cat: 'med', price: 39, weight: 0.1, desc: '大幅降低被蜱虫叮咬的概率。' },
   blanket:{ name: '急救保温毯', cat: 'med', price: 19, weight: 0.1, stack: true, max: 3, desc: '紧急时裹上，短时间内大幅减少热量流失。一次性。' },
-  warmer: { name: '暖宝宝(5片)', cat: 'med', price: 20, weight: 0.1, stack: true, max: 4, desc: '每片持续发热约 4 小时。' },
+  warmer: { name: '暖宝宝(5片)', cat: 'med', price: 20, weight: 0.1, stack: true, max: 4, desc: '每片持续发热约 8 小时。贴在胸口能暖和些，但一片只有几瓦，比不上走路和吃东西产的热。' },
 };
 
 // 某些物品购买后带有“次数”

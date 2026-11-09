@@ -844,7 +844,8 @@ class Game {
       wake: () => this.msg('你挣扎着恢复了意识，浑身僵硬得几乎动不了。', 'warn'),
       msg: (t, ty) => this.msg(t, ty), gearChanged: () => pl.setGear(inv), vomit: () => { this.camShake = 4; this.audio.burst({ f: 300, q: 1, dur: 0.6, vol: 0.4 }); },
       onExpire: (kk) => {
-        if (kk === 'tick') { s.addStatus('fever', { t: 520 }); this.msg('你开始发高烧，浑身发冷、关节酸痛……是蜱虫！（森林脑炎）', 'crit'); }
+        if (kk === 'tick') this.tickDropped(s, (t) => this.msg(t, 'warn'));
+        if (kk === 'incub') { s.addStatus('fever', { t: 520 }); this.msg('你开始发高烧，浑身发冷、关节酸痛……想起一个多星期前那只蜱虫。（森林脑炎）', 'crit'); }
         if (kk === 'diarrhea') this.msg('肚子终于消停了。', 'good');
         if (kk === 'sprain') this.msg('脚踝的伤基本好了。', 'good');
         if (kk === 'snowblind') this.msg('眼睛的刺痛减轻了，视线渐渐清晰。', 'good');
@@ -1050,7 +1051,7 @@ class Game {
     if (s.satiety > 96) { this.msg('你吃不下了。', 'info'); return; }
     if (hot) {
       if (inv.gasLeft() <= 0 || inv.water < 0.3) { this.msg('没有足够的燃气或水。', 'warn'); return; }
-      inv.useGas(); inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
+      inv.useGas(0.12); inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
     }
     inv.consume(id);
     const cold = s.core < 36.5 || s.balance < 0;
@@ -1060,7 +1061,7 @@ class Game {
     if (it.quick) s.stamina = Math.min(s.maxStamina(), s.stamina + 25);
     if (id === 'jerky') s.mental = Math.min(100, s.mental + 3);
     if (hot) {
-      s.core = Math.min(37.3, s.core + 0.5); s.mental = Math.min(100, s.mental + 9); s.hydration = Math.min(100, s.hydration + 8);
+      s.core = Math.min(37.2, s.core + 0.3); s.mental = Math.min(100, s.mental + 9); s.hydration = Math.min(100, s.hydration + 8);
       s.addStatus('hotmeal', { t: 2 * SEC_PER_GAME_HOUR });
       this.msg(`你烧水泡了一份热腾腾的${it.name}，一股暖流从胃里蔓延开来。`, 'good');
     } else if (cold) {
@@ -1099,14 +1100,15 @@ class Game {
   }
   boilWater() {
     const inv = this.inv;
-    if (inv.waterRaw < 0.01 || !inv.useGas()) return;
+    if (inv.waterRaw < 0.01 || !inv.useGas(clamp(inv.waterRaw * 0.3, 0.1, 2))) return;
     inv.waterRaw = 0; this.gameMin += 15; this.msg('你把生水烧开了。', 'good');
   }
   hotDrink() {
     const inv = this.inv, s = this.surv;
-    if (inv.water < 0.3 || !inv.useGas()) return;
+    if (inv.water < 0.3 || !inv.useGas(0.1)) return;
     inv.water -= 0.3; inv.waterRaw = Math.max(0, Math.min(inv.waterRaw, inv.water));
-    s.hydration = Math.min(100, s.hydration + 12); s.core = Math.min(37.3, s.core + 0.6); s.mental = Math.min(100, s.mental + 6);
+    // 0.3 L 约 70℃ 的水带进身体的热量和一口冰水带走的一样多（方向相反）：核心体温 +0.3℃ 左右
+    s.hydration = Math.min(100, s.hydration + 12); s.core = Math.min(37.2, s.core + 0.3 * 33 * 0.028); s.mental = Math.min(100, s.mental + 6);
     s.drinkFill(0.3);
     s.addStatus('hotmeal', { t: SEC_PER_GAME_HOUR });
     this.gameMin += 10; this.audio.drink();
@@ -1258,7 +1260,7 @@ class Game {
         st.diarrhea.t = Math.min(st.diarrhea.t, 10); this.msg('蒙脱石散起效了，肚子舒服了很多。', 'good'); break;
       case 'warmer':
         if (!inv.use('warmer')) return;
-        s.addStatus('warmer', { t: 4 * H }); this.msg('你撕开一片暖宝宝贴在身上，一股暖意慢慢渗进来。', 'good'); break;
+        s.addStatus('warmer', { t: 8 * H }); this.msg('你撕开一片暖宝宝贴在胸口，一股暖意慢慢渗进来。', 'good'); break;
       case 'blanket':
         inv.consume('blanket'); s.addStatus('blanket', { t: 4 * H }); this.msg('你把金色的急救保温毯裹在身上，热量流失大大减少。', 'good'); break;
       case 'power':
@@ -1283,10 +1285,16 @@ class Game {
     this.msg('你对着羚牛按下了喷雾——刺鼻的辣椒雾让它掉头狂奔而去！', 'good');
   }
 
+  // 没被发现的蜱虫吸饱血后会自己掉下来。病原体可能已经进了身体，但森林脑炎 / 莱姆病要潜伏一到两周才发病
+  tickDropped(s, note) {
+    note('你在小腿上摸到一个发硬的小红包，中间有个小黑点——一只吸饱了血的蜱虫已经自己掉了。');
+    if (this.rng() < 0.5) s.addStatus('incub', { t: (7 + this.rng() * 7) * 24 * SEC_PER_GAME_HOUR });
+  }
+
   checkBody() {
     const s = this.surv;
     this.gameMin += 10;
-    if (s.status.tick) { delete s.status.tick; this.msg('你在小腿上发现了一只吸饱了血的蜱虫……你用镊子小心地把它连头拔了出来。', 'good'); this.ui.modal('检查身体', '<p>你在小腿上发现了一只吸饱了血的蜱虫，小心地连头拔了出来。</p><p class="muted">蜱虫可能传播森林脑炎、莱姆病。在林区和草丛中行走后，记得检查身体。</p>'); }
+    if (s.status.tick) { delete s.status.tick; this.msg('你在小腿上发现了一只吸饱了血的蜱虫……你用镊子小心地把它连头拔了出来。', 'good'); this.ui.modal('检查身体', '<p>你在小腿上发现了一只吸饱了血的蜱虫，小心地连头拔了出来。</p><p class="muted">蜱虫可能传播森林脑炎、莱姆病，叮得越久风险越大。潜伏期一到两周：下山后如果发烧，要告诉医生被蜱虫咬过。在林区和草丛中行走后，记得检查身体。</p>'); }
     else this.msg('你仔细检查了一遍身体，没有发现蜱虫。', 'info');
   }
 
@@ -1454,7 +1462,7 @@ class Game {
     const black = $('fx-black');
     black.style.opacity = 1;
     const notes = new Set();
-    let woke = null, qSum = 0, n = 0, torn = false;
+    let woke = null, qSum = 0, n = 0, torn = false, dressed = false;
     const tentMode = mode === 'tent' || !!(job && job.tent);
     const sleepMode = mode === 'tent' || mode === 'outside' || mode === 'templeSleep';
     const flat = pl.terrainNormal(pl.pos.x, pl.pos.z).y > 0.86 && !pl.onRock;
@@ -1467,7 +1475,16 @@ class Game {
         if (mode === 'templeSleep' && !env.shelter) env.shelter = { weak: false };
         this.weather.update(1, this.hour(), this.altitude, this.airTemp, (t) => notes.add(t), this.wxK);
         // 睡眠质量
-        const th = s.thermal(env);
+        let th = s.thermal(env);
+        // 冷醒了就把背包里的保暖衣物都套上（真实的露营习惯：抓绒、羽绒服、帽子穿进睡袋里）
+        if (!job && !dressed && th.balance < 0) {
+          const more = ['fleece', 'down', 'hat'].filter(id => inv.has(id) && !inv.worn.has(id));
+          if (more.length) {
+            dressed = true; for (const id of more) inv.worn.add(id); pl.setGear(inv);
+            notes.add(`${sleepMode ? '半夜冷醒，你摸黑把' : '坐着坐着冷了，你把'}${more.map(id => ITEMS[id].name).join('、')}都穿上了。`);
+            th = s.thermal(env);
+          }
+        }
         let q = 1;
         if (th.balance < 0) q -= Math.min(0.8, -th.balance * 0.05);
         if (s.wet > 50) q -= 0.25;
@@ -1478,7 +1495,7 @@ class Game {
         if (s.altSick > 50) q -= 0.3;
         env.sleepQ = clamp(q, 0.1, 1.2);
         qSum += env.sleepQ; n++;
-        s.update(1, env, { msg: (t) => notes.add(t), gearChanged: () => pl.setGear(inv), onExpire: (kk) => { if (kk === 'tick') s.addStatus('fever', { t: 520 }); } });
+        s.update(1, env, { msg: (t) => notes.add(t), gearChanged: () => pl.setGear(inv), onExpire: (kk) => { if (kk === 'tick') this.tickDropped(s, (t) => notes.add(t)); if (kk === 'incub') { s.addStatus('fever', { t: 520 }); notes.add('你在高烧中醒来，浑身发冷、关节酸痛……想起一个多星期前那只蜱虫。'); } } });
         if (job && job.step) job.step(env, i);
         // 帐篷被撕裂
         if (tentMode && !inv.tentDamaged && inv.has('tent3') && !inv.has('tent4') && this.windLocal >= 8 && this.rng() < 0.02) { inv.tentDamaged = true; torn = true; }
@@ -1536,7 +1553,7 @@ class Game {
       '饥饿与低血糖': '连续多日负重行进，热量缺口会让身体迅速崩溃。',
       '失血过多': '在远离救援的地方，一处无法处理的伤口就足以致命。',
       '蛇毒': '低海拔林区的毒蛇常常隐藏在草丛中。',
-      '蜱虫叮咬引发的森林脑炎': '蜱虫可传播森林脑炎和莱姆病，潜伏期后突然发病。',
+      '蜱虫叮咬引发的森林脑炎': '蜱虫可传播森林脑炎和莱姆病，潜伏期一到两周，之后突然发病。',
       '冰雹砸伤': '冰雹天气务必寻找遮蔽。',
       '精神崩溃': '在迷雾与孤独中，人会慢慢失去判断力。',
       '极度疲劳衰竭': '连续多日的透支，身体终于撑不住了。',
@@ -1567,12 +1584,13 @@ class Game {
     const s = this.surv;
     const score = this.dangerCount;
     const rating = s.health > 70 && score < 6 ? '老练的山野行者' : s.health > 40 ? '幸存者' : '九死一生';
+    const incub = s.status.incub ? `<p style="color:#e8913a">下山后第 ${Math.max(1, Math.ceil(s.status.incub.t / (24 * SEC_PER_GAME_HOUR)))} 天，你突然发起高烧、浑身酸痛。好在你想起了腿上那个蜱虫叮过的红包，告诉了医生——确诊森林脑炎，住院两周后康复。</p>` : '';
     setTimeout(() => {
       this.ui.hide('hud');
       this.ui.showEnd({
         kicker: '你 活 着 走 了 出 来', title: '生 还', color: '#d8b46a', cause: `评价：${rating}`,
         stats: this.statsList(),
-        text: `<p>炊烟、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊隐没在翻滚的云层里，像从来没有存在过。</p><p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p><p class="muted">你很幸运。现实中的鳌太线自 2018 年起已被禁止穿越，请不要以身犯险。</p>`,
+        text: `<p>炊烟、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊隐没在翻滚的云层里，像从来没有存在过。</p>${incub}<p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p><p class="muted">你很幸运。现实中的鳌太线自 2018 年起已被禁止穿越，请不要以身犯险。</p>`,
         buttons: [{ label: '再走一次', big: true, action: () => { this.ui.hide('screen-end'); this.state = 'title'; this.toSeason(); } }, { label: '返回标题', action: () => this.toTitle() }],
       });
     }, 4000);
