@@ -340,7 +340,7 @@ class Game {
 
   snapshot() {
     return {
-      pos: this.player.pos.toArray(), camYaw: this.player.camYaw, gameMin: this.gameMin, startMin: this.startMin, reached: this.reached,
+      pos: this.player.pos.toArray(), camYaw: this.player.camYaw, gameMin: this.gameMin, startMin: this.startMin, reached: this.reached, rv: 2,
       inv: this.inv.serialize(), surv: this.surv.serialize(), weather: this.weather.serialize(), danger: this.dangerCount,
       npcTalked: this.world.npcs.map(n => n.talked), used: this.world.interactables.map(i => !!i.used), shopVisited: { ...this.shopVisited },
     };
@@ -349,6 +349,7 @@ class Game {
     this.player.pos.fromArray(s.pos);
     this.player.camYaw = s.camYaw; this.player.yaw = Math.PI / 2 - s.camYaw + Math.PI / 2;
     this.gameMin = s.gameMin; this.reached = s.reached; this.startMin = s.startMin || 7 * 60;
+    if (!(s.rv >= 2) && this.reached >= 9) this.reached++;   // 旧存档：水窝子之后新加了「飞机梁（主台）」，地标序号后移一位
     this.inv.restore(s.inv, BACKPACKS);
     this.surv.restore(s.surv);
     this.weather.restore(s.weather);
@@ -370,11 +371,12 @@ class Game {
     this.input = { f: false, b: false, l: false, r: false, sprint: false, crouch: false, jump: false };
     window.addEventListener('keydown', (e) => {
       if (map[e.code]) { this.keys[map[e.code]] = true; if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); }
+      if (e.code === 'Space') this.keys.jumpHeld = true;   // 按住空格（无敌模式下长按飞行）
       if (e.code === 'Tab') e.preventDefault();
       if (e.repeat) return;
       this.onKey(e.code, e);
     });
-    window.addEventListener('keyup', (e) => { if (map[e.code]) this.keys[map[e.code]] = false; });
+    window.addEventListener('keyup', (e) => { if (map[e.code]) this.keys[map[e.code]] = false; if (e.code === 'Space') this.keys.jumpHeld = false; });
     window.addEventListener('blur', () => { this.keys = {}; });
     this.canvas.addEventListener('click', () => {
       this.audio.init();
@@ -494,7 +496,7 @@ class Game {
     if (this.god) {
       s.fill();
     }
-    if (this.state === 'play') this.msg(this.god ? '无敌模式已开启：所有指标锁满，不会受伤生病。按住快跑 10 米/秒，能跳 2 米高。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」踏空飞行，松开落下。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格踏空飞行，松开落下。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
   }
 
   gfxMenu(back) {
@@ -804,7 +806,7 @@ class Game {
     // 玩家
     const k = this.keys;
     this.input.f = !!k.f; this.input.b = !!k.b; this.input.l = !!k.l; this.input.r = !!k.r;
-    this.input.sprint = !!k.sprint; this.input.crouch = !!k.crouch; this.input.jump = !!k.jump && !this.qte; this.input.warm = !!k.warm;
+    this.input.sprint = !!k.sprint; this.input.crouch = !!k.crouch; this.input.jump = !!k.jump && !this.qte; this.input.jumpHold = !!k.jumpHeld && !this.qte; this.input.warm = !!k.warm;
     // 触屏摇杆：模拟量方向（电脑端恒为 0，走原来的 WASD 逻辑）
     const st = this.touch && this.touch.stick;
     this.input.ax = st ? st.x : 0; this.input.ay = st ? st.y : 0;

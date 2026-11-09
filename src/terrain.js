@@ -25,9 +25,32 @@ export function profileY(x) {
   const lo = Math.min(p1, p2) - 6, hi = Math.max(p1, p2) + 6;
   y = clamp(y, lo, hi);
   // 段内起伏（地标处为 0）
-  const und = Math.sin(Math.PI * t) * (1 - openAt(x) * 0.55);   // 开阔台地上是稳稳的缓坡，没有忽上忽下
+  const pkSeg = a.peak || b.peak;
+  const und = Math.sin(Math.PI * t) * (1 - openAt(x) * 0.55) * (pkSeg ? 0.3 : 1);   // 开阔台地上是稳稳的缓坡，没有忽上忽下
   y += und * (N.noise2(x * 0.012, 3.3) * 6 + N.noise2(x * 0.03, 9.1) * 1.5);
+  if (pkSeg) y -= peakDip(a, b, t);
   return y;
+}
+
+// ---------- 一连串石头尖峰（飞机梁·梁1/2/3） ----------
+// 地标就是峰顶；两峰之间压下去一个垭口。sin 在两端斜率不为 0，所以峰顶是个尖（约 38°，手脚并用能上），垭口是圆的。
+const PEAK_D = 22;
+function peakDip(a, b, t) {
+  const s = Math.sin(Math.PI * t);
+  if (a.peak && b.peak) return PEAK_D * s;
+  if (b.peak) return PEAK_D * s * smoothstep(0.45, 0.9, t);        // 从台地过来：台面保持平，快到峰前才落下一个垭口，再直冲峰顶
+  return PEAK_D * 0.7 * s * (1 - smoothstep(0, 1, t));              // 下最后一座峰：先陡后缓
+}
+const PEAKS = ROUTE.filter(w => w.peak);
+// 尖峰链的横向收窄：整条链都是窄脊，峰顶附近更窄更陡
+function spireAt(x) {
+  if (!PEAKS.length) return 0;
+  const x0 = PEAKS[0].x, x1 = PEAKS[PEAKS.length - 1].x;
+  if (x < x0 - 40 || x > x1 + 40) return 0;
+  const chain = smoothstep(x0 - 40, x0 - 8, x) * (1 - smoothstep(x1 + 8, x1 + 40, x));
+  let near = 0;
+  for (const p of PEAKS) near = Math.max(near, 1 - smoothstep(0, 32, Math.abs(x - p.x)));
+  return chain * (0.6 + 0.4 * near);
 }
 
 // 截面形状（相对路线高度的偏移），d = 有符号横向距离
@@ -109,6 +132,10 @@ export function heightAt(x, z) {
   let off = cross(typeAt(sb.i), d, x) + cliffBand(typeAt(sb.i), d, x, op);
   if (sb.w < 1) off = lerp(cross(typeAt(sb.j), d, x) + cliffBand(typeAt(sb.j), d, x, op), off, sb.w);
   if (op > 0) off = lerp(off, crossOpen(d), op);
+  // 石头尖峰：两侧陡落（放在开阔台地混合之后，这样紧挨主台的梁1 也是尖的）
+  const sp = spireAt(x);
+  // 脊顶留一条四五米宽的走线；往外越来越陡的部分交给原来的截面，两者叠加不超过 40° 左右，失足不至于一路滑进深渊
+  if (sp > 0) off -= sp * 17 * (1 - Math.exp(-(Math.hypot(ad, 4) - 4) / 22));
   // 起点和终点之外：平缓谷地
   if (x < -20) off *= smoothstep(-200, -20, x);
   // 远处群山
@@ -126,6 +153,7 @@ export function heightAt(x, z) {
   const amp = 0.45 + nearT * 0.9 * (1 - op * 0.4) + Math.min(ad, 120) * 0.05 * grow;
   let det = N.fbm(x * 0.035, z * 0.035, 4) * amp + N.fbm(x * 0.008, z * 0.008, 3) * (2.5 + nearT * 1.5 + Math.min(ad, 300) * 0.08 * grow) * (1 - op * 0.3);
   if (st === 'stone' || st === 'pillars') det += N2.ridged(x * 0.09, z * 0.09, 2) * (0.5 + nearT * 1.1);
+  if (sp > 0) det += sp * (N2.ridged(x * 0.055, z * 0.055, 3) - 0.35) * (0.6 + nearT * 2.6);   // 尖峰上的花岗岩棱角
   let y = base + off + det;
   // 湖盆
   const lx = x - LAKE.x, lz = z - LAKE.z;
@@ -140,7 +168,7 @@ export function heightAt(x, z) {
   const wdx = x - wp.x, wdz = z - routeZ(wp.x);
   const wd = Math.sqrt(wdx * wdx + wdz * wdz);
   const flatR = wp.kind === 'village' ? 45 : wp.camp ? 22 : 13;
-  if (wd < flatR * 1.6) {
+  if (wd < flatR * 1.6 && !wp.peak) {   // 尖峰顶不削平
     const fy = altToY(wp.alt) + (wp.kind === 'village' ? 0 : 0.3);
     y = lerp(fy + det * 0.15, y, smoothstep(flatR * 0.5, flatR * 1.6, wd));
   }
@@ -152,7 +180,8 @@ export function heightAt(x, z) {
   }
   return y;
 }
-export const STREAM = { x0: ROUTE[27].x + 15, x1: ROUTE[29].x - 25, off: 8 };
+const STREAM_WP = ROUTE.findIndex(w => w.name === '平安寺');
+export const STREAM = { x0: ROUTE[STREAM_WP].x + 15, x1: ROUTE[STREAM_WP + 2].x - 25, off: 8 };
 
 export function nearestWaypoint(x) {
   const i = segIndexAt(x);
@@ -211,6 +240,9 @@ function colorAt(x, z, y, ny, out) {
     case 'rockfar': out.copy(C.rock2).lerp(P.meadow2, smoothstep(0, 1, n1) * 0.5); break;
     default: out.copy(P.meadow);
   }
+  // 石头尖峰：整条峰链都是裸露的花岗岩，只在石缝里有点地衣
+  const spk = spireAt(x);
+  if (spk > 0) out.lerp(tmpC2.copy(C.rock).lerp(C.lichen, smoothstep(0.2, 0.9, n1) * 0.4), smoothstep(0.05, 0.55, spk) * 0.9);
   const steep = smoothstep(0.82, 0.6, ny);
   out.lerp(ny < 0.5 ? C.cliffDark : C.rock2, steep);
   if (ti.ad < 2.2 && t !== 'stone' && t !== 'pillars' && x > -10) out.lerp(C.path, (1 - ti.ad / 2.2) * 0.7);
@@ -603,7 +635,7 @@ function buildObjects(chunk) {
     // 地标附近空出来
     const wi = nearestWaypoint(x); const wp = ROUTE[wi];
     const wd = Math.hypot(x - wp.x, z - routeZ(wp.x));
-    if (wd < (wp.kind === 'village' ? 40 : 14)) continue;
+    if (wd < (wp.kind === 'village' ? 40 : wp.peak ? 6 : 14)) continue;
     let t = ti.type; if (ti.ad > 260 + openAt(x) * 260) t = 'far';
     // ---- 岩石 ----
     let rockP = 0, rmin = 0.5, rmax = 1.6;
@@ -613,11 +645,15 @@ function buildObjects(chunk) {
     else if (t === 'meadow') rockP = 0.03;
     else if (t === 'far') rockP = alt > 3300 ? 0.02 : 0;
     else rockP = 0.015;
+    // 石头尖峰：乱石和一根根竖起的石牙
+    const spk = spireAt(x);
+    if (spk > 0.3 && ti.ad < 70) { rockP = Math.max(rockP, 0.5 * spk); rmin = 0.7; rmax = 2.2; }
     if (ny < 0.55) rockP *= 0.3;
     if (r1 < rockP) {
       const r = rmin + Math.pow(r2, 2.2) * (rmax - rmin) * (ti.ad > 60 ? 2 : 1);
       let h = r * (0.55 + r3 * 0.4);
       if (t === 'pillars' && r3 > 0.55 && ti.ad > 4) h = r * (3 + r3 * 4.5); // 石柱
+      if (spk > 0.3 && ti.ad > 3.5 && r3 > 0.4) h = r * (1.5 + r3 * 2.6); // 尖峰上的花岗岩石牙（不挡在走线上）
       if (ti.ad < 1.5 && t !== 'stone' && t !== 'pillars') continue;
       const lich = rnd();
       const rock = { x, z, y: y - r * 0.25, r: r * 1.0, h: h * 0.95, v: (r2 * 2) | 0, rot: rnd() * 6.28, c: 0.38 + rnd() * 0.2, l: lich < 0.2 ? 1 : lich < 0.28 ? 2 : 0 };
@@ -718,6 +754,7 @@ function buildGrass(chunk) {
     let p = 0;
     if (t === 'meadow') p = 0.9; else if (t === 'forest' || t === 'gully') p = 0.6; else if (t === 'ridge' || t === 'cliff') p = 0.45; else if (t === 'dead') p = 0.7; else p = 0.08;
     if (ti.ad < 1.2 && t !== 'stone') p *= 0.2;
+    p *= 1 - spireAt(x) * 0.85;   // 石头尖峰上几乎没有草
     if (isF) { const patch = N.noise2(x * 0.045, z * 0.045); p *= smoothstep(0.05, 0.45, patch) * (t === 'meadow' || t === 'ridge' ? 1.4 : 0.6); }
     if (r > p) continue;
     if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 2.2) continue;
