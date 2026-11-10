@@ -17,6 +17,15 @@ export const WX = {
 };
 const SEVERE = ['storm', 'hail', 'snow', 'gale', 'whiteout', 'sleet'];
 
+// 云顶海拔（米）。鳌太的风雨雪雾都在云里：贴着主脊的层云、层积云，顶部只比主脊（3500–3767 米）高几百米到一两千米；
+// 下雨下雪的雨层云，云顶一般 5–6 千米；只有夏天的雷暴云（积雨云）能冲到 1 万米上下。
+// 每场天气在范围内随机取一个；冬天对流弱、云层低，夏天高。飞到云顶以上就没有雨雪和雾了，云海在脚下。
+const CLOUD_TOP = {
+  clear: [3700, 4400], cloudy: [4300, 5500], fog: [3750, 4400], rain: [4800, 6300], storm: [8500, 12000],
+  hail: [8000, 11000], sleet: [4500, 5800], snow: [4400, 6000], gale: [3800, 4600], whiteout: [3900, 4800],
+};
+const TOP_SEASON = { winter: -500, spring: -150, summer: 400, autumn: 0 };
+
 const OMEN = {
   clear: '云层散开，阳光照了下来。',
   cloudy: '天空渐渐阴了下来，风里带着一股寒意。',
@@ -84,11 +93,14 @@ export class Weather {
     this.rainbow = 0;
     this.glory = 0;
     this.elapsed = 0;
+    this.topCur = this.sampleTop('clear'); this.topNext = null;
     this.buildPrecip(scene);
     this.buildBolt(scene);
   }
 
-  serialize() { return { cur: this.cur, next: this.next, blend: this.blend, blendRate: this.blendRate, timeLeft: this.timeLeft, snowCover: this.snowCover, windAngle: this.windAngle, fakeClear: this.fakeClear, forceSevere: this.forceSevere, elapsed: this.elapsed }; }
+  serialize() { return { cur: this.cur, next: this.next, blend: this.blend, blendRate: this.blendRate, timeLeft: this.timeLeft, snowCover: this.snowCover, windAngle: this.windAngle, fakeClear: this.fakeClear, forceSevere: this.forceSevere, elapsed: this.elapsed, topCur: this.topCur, topNext: this.topNext }; }
+  // 云顶至少比拔仙台（3767 米）高一截：主脊上走路时天气照旧，只有飞上去才会钻出云顶
+  sampleTop(k) { const r = CLOUD_TOP[k] || CLOUD_TOP.cloudy; return Math.max(3900, Math.round(lerp(r[0], r[1], this.rng()) + (TOP_SEASON[this.seasonKey] || 0))); }
   restore(s) { Object.assign(this, s); this.recompute(); }
 
   choose(hour, alt) {
@@ -118,7 +130,7 @@ export class Weather {
     return pickWeighted(w, this.rng());
   }
 
-  forceWeather(k, sudden = false) { this.next = k; this.blend = 0; this.blendRate = sudden ? 1 / 6 : 1 / 22; this.timeLeft = lerp(WX[k].dur[0], WX[k].dur[1], this.rng()) * SEC_PER_GAME_HOUR; }
+  forceWeather(k, sudden = false) { this.next = k; this.topNext = this.sampleTop(k); this.blend = 0; this.blendRate = sudden ? 1 / 6 : 1 / 22; this.timeLeft = lerp(WX[k].dur[0], WX[k].dur[1], this.rng()) * SEC_PER_GAME_HOUR; }
 
   recompute() {
     const a = WX[this.cur], b = this.next ? WX[this.next] : a;
@@ -132,6 +144,10 @@ export class Weather {
     p.key = this.next && B > 0.5 ? this.next : this.cur;
     p.name = WX[p.key].name; p.icon = WX[p.key].icon;
     p.severe = SEVERE.includes(p.key);
+    // 云顶：换天气时慢慢升降（对流发展、云层消散）。旧存档没有这项就现取一个
+    if (this.topCur == null) this.topCur = this.sampleTop(this.cur);
+    if (this.next && this.topNext == null) this.topNext = this.sampleTop(this.next);
+    p.top = this.next ? lerp(this.topCur, this.topNext, B) : this.topCur;
   }
 
   // localK：天气在玩家所在处的强度（0.2 山下林中 ~ 1 主脊）
@@ -147,7 +163,7 @@ export class Weather {
       else n = this.choose(hour, alt);
       if (n !== this.cur) {
         const sudden = this.rng() < 0.32 * this.diff.weather || (this.fakeClear === false && this.cur === 'clear' && n === 'fog' && this.rng() < 0.5);
-        this.next = n; this.blend = 0;
+        this.next = n; this.topNext = this.sampleTop(n); this.blend = 0;
         this.blendRate = sudden ? 1 / (4 + this.rng() * 3) : 1 / (16 + this.rng() * 10);
         if (onMessage) {
           if (localK < 0.6 && OMEN_LOW[n]) onMessage(OMEN_LOW[n], 'warn');
@@ -165,7 +181,7 @@ export class Weather {
     if (this.next) {
       this.blend += dt * this.blendRate;
       if (this.blend >= 1) {
-        this.cur = this.next; this.next = null; this.blend = 1;
+        this.cur = this.next; this.next = null; this.blend = 1; this.topCur = this.topNext; this.topNext = null;
         if (this.rainbowPending) { this.rainbowPending = false; this.rainbow = 1; this.events.push({ type: 'rainbow' }); }
       }
     }

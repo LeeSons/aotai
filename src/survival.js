@@ -466,7 +466,7 @@ export class Survival {
   // 状态标签（显示在 HUD）
   labels() {
     const out = [];
-    if (this.god) out.push(['无敌模式', 'good', '所有指标锁满，不会受伤生病；快跑 10 米/秒，能跳 2 米高，长按跳跃起飞、踏空自由飞行（大气层里最快 3.5 马赫，太空里 0.3 倍光速），按住下降落回地面。暂停菜单里可以关闭。']);
+    if (this.god) out.push(['无敌模式', 'good', '所有指标锁满，不会受伤生病；快跑 10 米/秒，能跳 2 米高，长按跳跃起飞、踏空朝视线方向自由飞行（最快 3.5 马赫，最高海拔 1 万米），按住下降落回地面。暂停菜单里可以关闭。']);
     const c = this.core;
     if (this.coma) out.push(['昏迷', 'crit']);
     if (c < 32) out.push(['重度失温', 'crit']); else if (c < 34) out.push(['中度失温', 'crit']); else if (c < 35) out.push(['轻度失温', 'bad']); else if (c < 36) out.push(['寒战', 'warn']);

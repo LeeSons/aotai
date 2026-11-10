@@ -3,12 +3,11 @@ import * as THREE from 'three';
 import { ROUTE, ROUTE_LENGTH, ITEMS, ITEM_USES, BACKPACKS, DIFFICULTY, GAME_MIN_PER_SEC, SEC_PER_GAME_HOUR, SHOP_STOCK, SEASONS, WORLD, routeZ, yToAlt, altToY, segIndexAt, moneyForWins, WIN_BONUS } from './data.js';
 import { mulberry32, clamp, lerp, smoothstep, makeNoise } from './noise.js';
 import { makeWeatherUniforms } from './materials.js';
-import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, openAt, STREAM, MOON_CRATER, moonHeight } from './terrain.js';
+import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, openAt, STREAM } from './terrain.js';
 import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
-import { Player, FLY_GEARS, FLY_GEAR0, GEAR_ATMO_MAX, gearLabel, gearSpeed } from './player.js';
-import { Space, R_MOON, KARMAN, SPACE_ALT, MOON_ALT, MOON_G, R_SUN, stdTemp, atmoCap, timeScale, fmtDist, fmtSpeed, fmtTime } from './space.js';
+import { Player, FLY_GEARS, FLY_GEAR0, gearLabel } from './player.js';
 import { Inventory, Survival } from './survival.js';
 import { Hazards } from './hazards.js';
 import { Audio } from './audio.js';
@@ -17,6 +16,16 @@ import { IS_TOUCH, TouchControls } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 const DN = makeNoise(31337);
+// 高空西风（m/s）：主脊高度、500 hPa（约 5.5 km）、300 hPa（约 9 km）、200 hPa（约 11 km）。
+// 秦岭在北纬 34°，冬天正好压在副热带西风急流底下，万米高空风速五六十米每秒；夏天急流北移，弱得多
+const JET = { winter: [14, 28, 50, 60], spring: [11, 22, 38, 45], autumn: [10, 18, 32, 38], summer: [6, 10, 18, 22] };
+const JET_ALT = [3500, 5500, 9000, 11000];
+function jetLevel(alt, season) {
+  const v = JET[season] || JET.autumn;
+  let ms = v[0];
+  for (let i = 1; i < 4; i++) if (alt > JET_ALT[i - 1]) ms = lerp(v[i - 1], v[i], clamp((alt - JET_ALT[i - 1]) / (JET_ALT[i] - JET_ALT[i - 1]), 0, 1));
+  return Math.min(17, Math.pow(ms / 0.836, 2 / 3));   // 换算成风级（蒲福风级，中国扩展到 17 级）
+}
 // 树冠遮蔽（挡风雨、挡冰雹）；土质地表（雨后成泥）
 const CANOPY = { forest: 1, gully: 1, dead: 0.4 };
 // 附近能捡到多少柴：林子里最多，枯木林的站杆最好烧；林线以上只有零星灌木，石海山脊几乎没有
@@ -134,15 +143,8 @@ class Game {
     this.hemi = new THREE.HemisphereLight(0xbfd4ff, 0x3a3020, 0.6); this.scene.add(this.hemi);
     this.flashLight = new THREE.AmbientLight(0xdde6ff, 0); this.scene.add(this.flashLight);
     this.sky = new Sky(this.scene);
-    // 太空（无敌模式飞出大气层后）：realm = earth / space / moon
-    this.space = new Space();
-    this.realm = 'earth';
-    this.spaceTarget = 0;
-    this.spaceMarks = document.createElement('div');
-    this.spaceMarks.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;display:none';
-    this.spaceMarks.innerHTML = ['earth', 'moon', 'sun'].map(k => `<div data-k="${k}" style="position:absolute;transform:translate(-50%,-140%);color:#e8e2cf;font-size:12px;text-align:center;white-space:nowrap;text-shadow:0 0 4px #000,0 0 2px #000"></div>`).join('');
-    document.body.appendChild(this.spaceMarks);
     this.cloudSea = new CloudSea(this.scene);
+    this.cloudDeck = new CloudSea(this.scene);   // 飞到云顶以上时脚下的云层
     this.glory = new Glory(this.scene);
     this.fauna = new Fauna(this.scene);
     this.terrain = new TerrainManager(this.scene);
@@ -408,7 +410,7 @@ class Game {
       else if (drag) { dx = e.clientX - lx; dy = e.clientY - ly; lx = e.clientX; ly = e.clientY; }
       else return;
       this.player.camYaw += dx * 0.0022;
-      this.player.camPitch = clamp(this.player.camPitch - dy * 0.0022, ...this.pitchRange());
+      this.player.camPitch = clamp(this.player.camPitch - dy * 0.0022, ...this.player.pitchRange());
     });
     let wheelAcc = 0, wheelT = 0;
     window.addEventListener('wheel', (e) => {
@@ -437,15 +439,6 @@ class Game {
       if (mapOpen) { ui.hide('screen-map'); return; }
       if (ui.modalOpen) { ui.closeModal(); return; }
       this.pauseMenu(); return;
-    }
-    // 太空 / 月面：只保留飞行、视角、灯、说明这些操作
-    if (this.realm && this.realm !== 'earth') {
-      if (this.anyUI()) return;
-      if (code === 'KeyN') { this.cycleTarget(); return; }
-      if (['KeyB', 'Tab', 'KeyM', 'KeyT', 'KeyR', 'KeyE', 'KeyQ', 'KeyG', 'KeyJ', 'Digit1', 'Digit2', 'Digit3'].includes(code)) {
-        this.msg(this.realm === 'moon' ? '在月面上先别忙这些——这里是真空。（能用的：飞行、跳、视角、头灯、N 对准天体）' : '在太空里做不了这个。（能用的：飞行、视角、换速度档、N 对准天体）', 'info');
-        return;
-      }
     }
     if (code === 'KeyB' || code === 'Tab') {
       if (invOpen) { ui.hide('screen-inv'); return; }
@@ -521,285 +514,10 @@ class Game {
     const g0 = pl.flyGear ?? FLY_GEAR0;
     pl.flyGear = clamp(g0 + d, 0, FLY_GEARS.length - 1);
     const top = pl.flyGear === FLY_GEARS.length - 1, low = pl.flyGear === 0;
-    const inAtmo = this.realm === 'earth' || (this.realm === 'space' && this.space.altOf(this.space.earth) < KARMAN);
-    const note = top && d > 0 && g0 === pl.flyGear ? '（已是最快）' : low && d < 0 && g0 === pl.flyGear ? '（已是最慢）'
-      : inAtmo && pl.flyGear > GEAR_ATMO_MAX ? '（大气层里最快 3.5 马赫，出了大气层这一档才生效）'
-      : this.realm === 'moon' && gearSpeed(FLY_GEARS[pl.flyGear], 15) > 1000 ? '（贴着月面最快 1 km/s，飞高点进入太空才生效）' : '';
-    this.ui.alert(`飞行速度：${gearLabel(FLY_GEARS[pl.flyGear], this.realm === 'space' ? stdTemp(this.space.altOf(this.space.earth)) : this.airTemp)}${note}`, 1.6);
+    this.ui.alert(`飞行速度：${gearLabel(FLY_GEARS[pl.flyGear], this.airTemp)}${top && d > 0 && g0 === pl.flyGear ? '（已是最快）' : low && d < 0 && g0 === pl.flyGear ? '（已是最慢）' : ''}`, 1.3);
   }
-
-  // ===================== 太空 / 月球 / 太阳 =====================
-  enterSpace() {
-    const pl = this.player, sp = this.space;
-    this.realm = 'space';
-    this.spaceExit = { x: pl.pos.x, z: pl.pos.z };
-    const sunDir = (this.sunDir || new THREE.Vector3(0.5, 0.6, 0.38)).clone().normalize();
-    const moonDir = new THREE.Vector3(-sunDir.x, Math.abs(sunDir.y) * 0.8 + 0.25, -sunDir.z + 0.3).normalize();   // 和天上画的月亮同一个方向
-    const alt = yToAlt(pl.pos.y);
-    sp.begin(alt, sunDir, moonDir, new THREE.Vector3(pl.vel.x, pl.vel.y / 0.22, pl.vel.z).clampLength(0, atmoCap(alt)));
-    sp.fg.add(pl.model); pl.model.position.set(0, 0, 0);
-    this.camera.far = 2e5; this.camera.updateProjectionMatrix();
-    this.spaceMarks.style.display = '';
-    this.resetPost();
-    this.msg('你冲上了万米高空。脚下的大地变成一道弧线，天空越来越暗……继续往上（空格），到海拔 100 km 就出了大气层。', 'good');
-    this.tip('space', IS_TOUCH ? '太空里：摇杆朝视线方向飞，按住「跳」/「蹲」远离 / 靠近脚下的星球，「加速」「减速」换档；「更多」里可以对准月球、太阳、地球。'
-      : '太空里：W 朝视线方向飞，空格 / C 远离 / 靠近脚下的星球，滚轮或 +/- 换档；按 N 对准月球、太阳、地球。');
-  }
-  exitSpaceToEarth() {
-    const pl = this.player, sp = this.space, e = this.spaceExit || { x: 0, z: 0 };
-    this.realm = 'earth';
-    this.scene.add(pl.model);
-    pl.pos.set(e.x, altToY(SPACE_ALT - 400), e.z);
-    pl.vel.set(sp.V.x, sp.V.y * 0.22, sp.V.z).clampLength(0, 400);
-    pl.flying = true; pl.onGround = false;
-    this.camera.far = 5000; this.camera.updateProjectionMatrix();
-    this.spaceMarks.style.display = 'none';
-    this.terrain.update(pl.pos.x, pl.pos.z, 0, true);
-    this.msg('你重新钻进对流层，回到了秦岭上空。（这个游戏里地球上只有秦岭这一片有地面，从哪儿落下来都回到这里）', 'info');
-  }
-  enterMoon() {
-    const pl = this.player, sp = this.space;
-    this.realm = 'moon';
-    // 降落点：飞来的方向正下方；如果那里是月夜，就挪到晨昏线白天一侧、太阳高约 20° 的地方
-    // （阿波罗登月也特意选在当地清晨、太阳角 10–15° 时降落：影子长，坑坑洼洼看得清）
-    const u = sp.upAt(sp.moon).clone(), Ls = sp.sun.pos.clone().sub(sp.moon.pos).normalize();
-    let night = false;
-    if (u.dot(Ls) < Math.sin(0.25)) {
-      night = true;
-      const axis = u.clone().cross(Ls); if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0); axis.normalize();
-      const ang = Math.acos(clamp(u.dot(Ls), -1, 1)) - (Math.PI / 2 - 0.35);
-      u.applyAxisAngle(axis, ang);
-    }
-    this.moonUp = u;
-    sp.S.copy(sp.moon.pos).addScaledVector(u, R_MOON + MOON_ALT);
-    this.terrain.radius = 12;   // 月面没有雾，看得远：多加载一圈地形，再远处由月球球面接上
-    this.moonQ = new THREE.Quaternion().setFromUnitVectors(this.moonUp, new THREE.Vector3(0, 1, 0));
-    WORLD.body = 'moon';
-    this.terrain.clearAll();
-    this.earthHidden = this.scene.children.filter(o => o.visible && o !== pl.model && !o.isLight);
-    this.earthHidden.forEach(o => { o.visible = false; });
-    this.savedFog = this.scene.fog; this.scene.fog = null;
-    this.scene.add(pl.model);
-    const x = -MOON_CRATER.r * 1.7, z = 0;   // 落在大环形山西侧的外坡上，面朝环形山
-    pl.pos.set(x, moonHeight(x, z) + (MOON_ALT - 400) * 0.22, z);
-    const vl = sp.V.clone().applyQuaternion(this.moonQ);
-    pl.vel.set(vl.x, vl.y * 0.22, vl.z).clampLength(0, 200);
-    pl.flying = true; pl.onGround = false; pl.camYaw = 0; pl.camPitch = -0.2;
-    this.wxU.uSnow.value = 0; this.wxU.uWet.value = 0;
-    this.terrain.update(pl.pos.x, pl.pos.z, 0, true);
-    this.ui.titleCard('月 球', '哥白尼环形山', '直径 93 km · 深 3.8 km', '风暴洋里最醒目的年轻环形山，约 8 亿年前一颗小行星撞出来的。平坦的坑底、阶梯状的内壁、坑中央的山峰都是撞击时岩石反弹形成的。（游戏里按比例缩小了）');
-    if (night) this.msg('正下方是月夜（温度 −170℃，伸手不见五指），你改道飞向晨昏线，在太阳刚升起约 20° 的地方降落——阿波罗登月也是这么选的。', 'info');
-    this.msg('你降落到了月球上空。这里没有空气：没有风、没有声音，天空是黑的，影子边缘锋利。月球重力只有地球的 1/6——跳一下能蹦 12 米高。', 'good');
-  }
-  exitMoon() {
-    const pl = this.player, sp = this.space;
-    this.realm = 'space';
-    sp.S.copy(sp.moon.pos).addScaledVector(this.moonUp, R_MOON + MOON_ALT * 1.2);
-    sp.V.set(pl.vel.x, pl.vel.y / 0.22, pl.vel.z).applyQuaternion(this.moonQ.clone().invert());
-    WORLD.body = 'earth'; this.terrain.radius = 6;
-    this.terrain.clearAll();
-    (this.earthHidden || []).forEach(o => { o.visible = true; }); this.earthHidden = null;
-    if (this.savedFog) this.scene.fog = this.savedFog;
-    sp.fg.add(pl.model); pl.model.position.set(0, 0, 0);
-    pl.camPitch = 0.3;
-    this.msg('你离开了月面，重新回到太空。', 'info');
-  }
-  resetRealm() {
-    if (!this.realm || this.realm === 'earth') return;
-    if (this.realm === 'moon') {
-      WORLD.body = 'earth'; this.terrain.radius = 6; this.terrain.clearAll();
-      (this.earthHidden || []).forEach(o => { o.visible = true; }); this.earthHidden = null;
-      if (this.savedFog) this.scene.fog = this.savedFog;
-    }
-    this.realm = 'earth';
-    this.scene.add(this.player.model);
-    this.camera.far = 5000; this.camera.updateProjectionMatrix();
-    this.spaceMarks.style.display = 'none';
-  }
-  resetPost() { const U = this.postU; U.uBlur.value = 0; U.uDesat.value = 0; U.uCold.value = 0; U.uAber.value = 0; U.uRed.value = 0; U.uPulse.value = 0; U.uExposure.value = 1; this.hurtFx = 0; }
-  spaceBodies() { const sp = this.space; return this.realm === 'moon' ? [sp.sun, sp.earth] : [sp.moon, sp.sun, sp.earth]; }
-  // N：对准当前目标；已经对准了再按就换下一个（月球 → 太阳 → 地球）
-  cycleTarget() {
-    const list = this.spaceBodies(), sp = this.space, pl = this.player;
-    const dirOf = (b) => { const d = b.pos.clone().sub(sp.S).normalize(); if (this.realm === 'moon') d.applyQuaternion(this.moonQ); return d; };
-    const look = new THREE.Vector3(Math.cos(pl.camYaw) * Math.cos(pl.camPitch), Math.sin(pl.camPitch), Math.sin(pl.camYaw) * Math.cos(pl.camPitch));
-    if (look.dot(dirOf(list[this.spaceTarget % list.length])) > 0.998) this.spaceTarget = (this.spaceTarget + 1) % list.length;
-    const b = list[this.spaceTarget % list.length];
-    const d = dirOf(b);
-    pl.camYaw = Math.atan2(d.z, d.x); pl.camPitch = clamp(Math.asin(clamp(d.y, -1, 1)), ...this.pitchRange());
-    this.ui.alert(`对准：${b.name}（${fmtDist(sp.S.distanceTo(b.pos) - b.R)}）`, 1.6);
-  }
-  spaceTargetBody() { const list = this.spaceBodies(); return list[this.spaceTarget % list.length]; }
-
-  spaceFrame(dt) {
-    if (this.anyUI()) return;
-    const sp = this.space, pl = this.player, k = this.keys, s = this.surv;
-    this.gameMin += dt * GAME_MIN_PER_SEC; sp.time += dt;
-    s.fill();
-    const [plo, phi] = this.pitchRange();
-    if (k.yl) pl.camYaw -= dt * 1.8; if (k.yr) pl.camYaw += dt * 1.8;
-    if (k.pu) pl.camPitch = clamp(pl.camPitch + dt * 1.2, plo, phi); if (k.pd) pl.camPitch = clamp(pl.camPitch - dt * 1.2, plo, phi);
-    const cp = Math.cos(pl.camPitch);
-    const fwd = new THREE.Vector3(Math.cos(pl.camYaw) * cp, Math.sin(pl.camPitch), Math.sin(pl.camYaw) * cp);
-    const right = new THREE.Vector3(-Math.sin(pl.camYaw), 0, Math.cos(pl.camYaw));
-    const near = sp.nearest(), up = sp.upAt(near.body);
-    const wish = new THREE.Vector3();
-    const st = this.touch && this.touch.stick;
-    if (st && (st.x || st.y)) wish.addScaledVector(fwd, st.y).addScaledVector(right, st.x);
-    else { if (k.f) wish.add(fwd); if (k.b) wish.sub(fwd); if (k.r) wish.add(right); if (k.l) wish.sub(right); }
-    if (k.jumpHeld) wish.add(up); if (k.crouch) wish.sub(up);
-    if (wish.lengthSq() > 1) wish.normalize();
-    k.jump = false;
-    const altE = sp.altOf(sp.earth);
-    const inAtmo = altE < KARMAN;
-    let v = gearSpeed(FLY_GEARS[pl.flyGear ?? FLY_GEAR0], stdTemp(altE));
-    if (inAtmo) v = Math.min(v, atmoCap(altE));
-    sp.V.lerp(wish.multiplyScalar(v), 1 - Math.exp(-3 * dt));
-    if (inAtmo && sp.V.length() > atmoCap(altE) * 1.02) {   // 从太空高速冲回大气层：被空气猛地减速（再入）
-      sp.V.setLength(atmoCap(altE));
-      if (!sp.flags.reentry) { sp.flags.reentry = true; this.postU.uRed.value = 0.8; this.camShake = 6; this.msg('你一头扎进大气层，空气被压缩得炽热发光，速度被猛地压到 3.5 马赫以下。（再入大气层）', 'warn'); }
-    }
-    if (!inAtmo) sp.flags.reentry = false;
-    this.postU.uRed.value = Math.max(0, this.postU.uRed.value - dt * 0.6);
-    // 时间加速，但每帧最多走到离最近天体距离的一半：越靠近越“慢”，高速也不会一帧穿过月球
-    let ts = timeScale(near.alt);
-    const step = sp.V.length() * dt * ts, maxStep = Math.max(0.5 * Math.max(near.alt, 0), near.body === sp.sun ? 2e6 : 5e5);
-    if (near.alt > 0 && step > maxStep) ts *= maxStep / step;
-    sp.tsEff = ts;
-    sp.S.addScaledVector(sp.V, dt * ts);
-    // 卡门线
-    const altE2 = sp.altOf(sp.earth);
-    if (altE2 > KARMAN && !sp.flags.karman) { sp.flags.karman = true; this.msg('你越过了卡门线（海拔 100 km）——正式进入太空。头顶全黑，星星不再闪烁。出了大气层，速度档可以继续往上调了：第一、第二、第三宇宙速度……最快 0.3 倍光速。', 'good'); }
-    if (altE2 < KARMAN * 0.8) sp.flags.karman = false;
-    // 太阳内部
-    this.sunDive(dt);
-    // 切换：落回地球 / 降到月面
-    if (altE2 < SPACE_ALT * 0.9) { this.exitSpaceToEarth(); return; }
-    if (sp.altOf(sp.moon) < MOON_ALT) { this.enterMoon(); return; }
-    // 相机：玩家在原点
-    const dir = fwd;
-    pl.model.position.set(0, 0, 0);
-    if (wish.lengthSq() > 0.01) pl.yaw = Math.atan2(fwd.x, fwd.z);
-    pl.model.rotation.y = pl.yaw;
-    const head = new THREE.Vector3(0, 2.0, 0);
-    if (pl.firstPerson) this.camera.position.copy(head);
-    else this.camera.position.copy(head).add(new THREE.Vector3(-dir.z, 0, dir.x).normalize().multiplyScalar(0.65)).addScaledVector(dir, -pl.camDist);
-    this.camera.lookAt(this.camera.position.clone().add(dir));
-    if (this.camShake > 0) { this.camShake = Math.max(0, this.camShake - dt * 6); this.camera.rotateZ((Math.random() - 0.5) * this.camShake * 0.004); }
-    const spd = sp.V.length();
-    this.stanceLabel = `踏空飞行 ${fmtSpeed(spd)}${ts > 6 ? ` · 时间加速 ×${Math.round(ts)}` : ''}`;
-    this.altitude = altE2;
-    this.ui.updateHUD(this);
-  }
-  // 太阳内部：分层提示，核心里讲核聚变
-  sunDive(dt) {
-    const sp = this.space, f = sp.flags;
-    const r = sp.S.distanceTo(sp.sun.pos) / R_SUN;
-    if (r > 2.5) { f.corona = f.photo = f.conv = f.rad = f.core = false; return; }
-    if (r < 2 && !f.corona) { f.corona = true; this.msg('你闯进了日冕：温度 100–300 万 ℃，可它稀薄得比实验室里的真空还空，所以并没有想象中“烫”。前方就是太阳表面。', 'warn'); }
-    if (r < 1 && !f.photo) { f.photo = true; this.postU.uPulse.value = 0.3; this.msg('你冲进了光球层——太阳“表面”，约 5500 ℃。脚下翻滚的“米粒组织”是一团团上涌的热等离子体，每一颗都有上千公里大。', 'crit'); }
-    if (r < 0.97 && !f.conv) { f.conv = true; this.msg('对流层：约 200 万 ℃。热等离子体像一锅沸水上下翻滚，把核心的能量一路搬到表面。', 'warn'); }
-    if (r < 0.7 && !f.rad) { f.rad = true; this.msg('辐射层：约 700 万 ℃。这里太稠密，光子每走一小段就被撞回来，要乱撞十几万年才能走出太阳。', 'warn'); }
-    if (r < 0.25) {
-      if (!f.core) { f.core = true; f.fus = 0; f.fusT = 0; this.msg('太阳核心：约 1500 万 ℃，2500 亿个大气压，密度是水的 150 倍。氢原子核在这里被硬挤到一起，聚变成氦——你周围每一个闪光，都是一次核聚变。', 'crit'); }
-      f.fusT -= dt;
-      if (f.fusT <= 0) {
-        const FUS = [
-          'p + p → ²H + e⁺ + νₑ ：两个质子撞在一起，其中一个变成中子，组成氘核，放出一个正电子和一个中微子（中微子直接穿出太阳，8 分钟后到达地球）。',
-          '²H + p → ³He + γ ：氘核再吞下一个质子，变成氦-3，放出一个伽马光子。',
-          '³He + ³He → ⁴He + 2p ：两个氦-3 合成一个氦-4，还回两个质子，继续参加下一轮。',
-          '总账：4 个氢核 → 1 个氦核，质量少了 0.7%，变成 26.7 MeV 的能量（E = mc²）。太阳每秒这样烧掉约 6 亿吨氢，其中 400 万吨质量直接变成了光和热。',
-        ];
-        this.msg('☀ ' + FUS[f.fus % FUS.length], 'good'); f.fus++; f.fusT = 5;
-        this.postU.uPulse.value = 0.25;
-      }
-    } else if (r > 0.3) f.core = false;
-    this.postU.uPulse.value = Math.max(0, this.postU.uPulse.value - dt * 0.5);
-  }
-  // 太阳内部温度（K）
-  sunTemp(r) { return r >= 1 ? 1.5e6 : r > 0.7 ? 5772 + (2e6 - 5772) * Math.pow((1 - r) / 0.3, 2) : r > 0.25 ? 2e6 + (7e6 - 2e6) * (0.7 - r) / 0.45 : 7e6 + (1.57e7 - 7e6) * (0.25 - r) / 0.25; }
-
-  moonFrame(dt) {
-    if (this.anyUI()) return;
-    const sp = this.space, pl = this.player, k = this.keys, s = this.surv;
-    this.gameMin += dt * GAME_MIN_PER_SEC; sp.time += dt;
-    this.input.f = !!k.f; this.input.b = !!k.b; this.input.l = !!k.l; this.input.r = !!k.r;
-    this.input.sprint = !!k.sprint; this.input.crouch = !!k.crouch; this.input.jump = !!k.jump; this.input.jumpHold = !!k.jumpHeld; this.input.warm = false;
-    const st = this.touch && this.touch.stick;
-    this.input.ax = st ? st.x : 0; this.input.ay = st ? st.y : 0;
-    if (k.yl) pl.camYaw -= dt * 1.8; if (k.yr) pl.camYaw += dt * 1.8;
-    if (k.pu) pl.camPitch = clamp(pl.camPitch + dt * 1.2, -1.25, 0.95); if (k.pd) pl.camPitch = clamp(pl.camPitch - dt * 1.2, -1.25, 0.95);
-    pl.update(dt, this.input, { god: true, vacuum: true, gravity: 22 * MOON_G, flyCap: 1000, airT: 15, speedMult: 1, canSprint: true, canJump: true, slideNY: 0.745, stone: false, drift: 0, coma: false, shiver: 0, tired: 0, load: 0, locked: false, poles: pl.polesOut, lean: 0, sway: 0 });
-    k.jump = false;
-    for (const ev of pl.events) if (ev.type === 'takeoff') this.tip('fly', '你踏空飞了起来！空格上升、C 下降，WASD 前后左右飞；滚轮或 +/- 换速度档。按住 C 一直降到地面才会落地。');   // 真空里没有脚步声
-    s.fill();
-    const g = groundAt(pl.pos.x, pl.pos.z).y;
-    if (pl.flying && (pl.pos.y - g) / 0.22 > MOON_ALT * 1.1) { this.exitMoon(); return; }
-    // 远处（加载的地形之外）用月球球面接上，看到真正的月平线
-    sp.S.copy(sp.moon.pos).addScaledVector(this.moonUp, R_MOON + Math.max(pl.pos.y / 0.22, 30));
-    const fast = pl.flying && (pl.speed3 || 0) > 60;
-    this.terrain.update(pl.pos.x, pl.pos.z, fast ? 9 : 4, false, fast);
-    pl.updateCamera(this.camera, dt, 0, 0, this.time);
-    // 太阳光：没有大气散射，阴影里几乎全黑，只有一点地照
-    const L = sp.sun.pos.clone().sub(sp.S).normalize().applyQuaternion(this.moonQ);
-    this.sun.position.copy(pl.pos).addScaledVector(L, 300); this.sun.target.position.copy(pl.pos);
-    this.sun.intensity = 3.6 * smoothstep(-0.02, 0.04, L.y); this.sun.color.setRGB(1, 0.98, 0.95);
-    this.hemi.color.setRGB(0.5, 0.6, 0.8); this.hemi.groundColor.setRGB(0.15, 0.15, 0.15); this.hemi.intensity = 0.06;
-    this.flashLight.intensity = 0;
-    this.moonSunUp = L.y;
-    this.altitude = (pl.pos.y - g) / 0.22;
-    this.stanceLabel = pl.stanceLabel();
-    this.ui.updateHUD(this);
-  }
-
-  // 太空 / 月面的 HUD 文字
-  spaceHUD() {
-    const sp = this.space, tb = this.spaceTargetBody();
-    const near = sp.nearest();
-    let wx, alt;
-    const ds = sp.S.distanceTo(sp.sun.pos) / R_SUN;
-    if (this.realm === 'moon') {
-      const day = (this.moonSunUp || 0) > 0;
-      wx = `🌑 月面 · 真空 · 月面温度 <b>${day ? '+120' : '−170'}℃</b>（${day ? '白天' : '夜里'}）· 重力 1/6 g`;
-      alt = `离月面 <b>${Math.round(Math.max(0, this.altitude))}</b> m`;
-    } else if (ds < 1) {
-      wx = `☀ 太阳内部 · 温度约 <b>${(this.sunTemp(ds) / 1e4).toFixed(ds < 0.7 ? 0 : 1)} 万 ℃</b>`;
-      alt = `离太阳中心 <b>${fmtDist(ds * R_SUN)}</b>（${ds > 0.7 ? '对流层' : ds > 0.25 ? '辐射层' : '核心'}）`;
-    } else {
-      const altE = sp.altOf(sp.earth);
-      wx = altE < KARMAN ? `🌍 高层大气 · 气温 <b>${Math.round(stdTemp(altE))}℃</b> · 空气只有地面的 ${(Math.exp(-altE / 8500) * 100).toPrecision(2)}%` : (ds < 2 ? '☀ 日冕 · 100 多万 ℃，极其稀薄' : '✦ 太空 · 真空 · 没有声音');
-      alt = `离${near.body.name}表面 <b>${fmtDist(near.alt)}</b>`;
-    }
-    const dist = sp.S.distanceTo(tb.pos) - tb.R;
-    const v = sp.V.length(), ts = this.realm === 'space' ? (sp.tsEff || timeScale(near.alt)) : 1;
-    const eta = v > 1 ? dist / (v * ts) : Infinity;
-    const next = dist <= 0 ? `你就在${tb.name}里面 <span class="muted">（${IS_TOUCH ? '「更多」里换目标' : 'N 换目标并对准'}）</span>` : `目标：${tb.name} · ${fmtDist(dist)}${eta < 1e7 ? ` · 照现在的速度约 ${fmtTime(eta)}` : ''} <span class="muted">（${IS_TOUCH ? '「更多」里换目标' : 'N 换目标并对准'}）</span>`;
-    return { wx, alt, next };
-  }
-  updateSpaceMarks(q) {
-    const sp = this.space, cam = this.camera;
-    const camDir = new THREE.Vector3(); cam.getWorldDirection(camDir);
-    for (const el of this.spaceMarks.children) {
-      const b = sp[el.dataset.k];
-      if (this.realm === 'moon' && b === sp.moon) { el.style.display = 'none'; continue; }
-      const d = b.pos.clone().sub(sp.S); const dist = d.length() - b.R; d.normalize();
-      if (q) d.applyQuaternion(q);
-      if (d.dot(camDir) < 0.05 || (b === sp.sun && dist < 0)) { el.style.display = 'none'; continue; }
-      const p = cam.position.clone().addScaledVector(d, 1000).project(cam);
-      el.style.display = '';
-      el.style.left = ((p.x + 1) / 2 * window.innerWidth) + 'px';
-      el.style.top = ((1 - p.y) / 2 * window.innerHeight) + 'px';
-      el.innerHTML = `${b === this.spaceTargetBody() ? '◆ ' : ''}${b.name}<br><span style="opacity:.75">${fmtDist(dist)}</span>`;
-    }
-  }
-
-  pitchRange() { return this.realm === 'space' ? [-1.55, 1.55] : [-1.25, 0.95]; }
 
   setGod(on) {
-    if (!on && this.realm && this.realm !== 'earth') {   // 真空 / 太阳里关掉无敌就是立刻死亡
-      this.msg(this.realm === 'moon' ? '这里是真空，月面白天 120℃、夜里 −170℃——关掉无敌你会立刻死去。先飞回地球再关。' : '这里是太空，没有空气、温度极端，还有致命的辐射——关掉无敌你会立刻死去。先飞回地球再关。', 'warn');
-      return;
-    }
     this.god = !!on;
     try { localStorage.setItem('aotai_god', this.god ? '1' : '0'); } catch (e) { /* */ }
     const s = this.surv;
@@ -808,7 +526,7 @@ class Game {
     if (this.god) {
       s.fill();
     }
-    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后按住「跳」/「蹲」上升下降，点「加速」/「减速」换档（大气层里最快 3.5 马赫），按住「蹲」降到地面才落地。一直往上飞能冲出大气层，去月球和太阳。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后空格上升、C 下降、WASD 前后左右，滚轮或 +/- 换速度档（大气层里最快 3.5 马赫），按住 C 降到地面才落地。一直往上飞能冲出大气层，去月球和太阳。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后摇杆往视线方向飞（抬头往上、低头往下），按住「跳」/「蹲」竖直升降，点「加速」/「减速」换档（最快 3.5 马赫），按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后 W 往视线方向飞（抬头往上、低头往下），空格 / C 竖直升降，滚轮或 +/- 换速度档（最快 3.5 马赫），按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
   }
 
   gfxMenu(back) {
@@ -834,7 +552,6 @@ class Game {
   }
 
   toTitle() {
-    this.resetRealm();
     this.state = 'title';
     this.ui.hide('hud'); this.ui.hide('screen-end'); this.ui.hide('screen-inv'); this.ui.hide('screen-map');
     if (this.ui.modalOpen) this.ui.closeModal();
@@ -877,6 +594,7 @@ class Game {
   wxLabel() {
     const p = this.weather.p, L = this.wxLocal;
     const same = { icon: p.icon, name: p.name, ridge: null };
+    if (L && (this.aboveCloud || 0) > 0.5) return { icon: this.night ? '🌙' : '☀', name: '云层之上', ridge: p.key === 'clear' ? null : p.icon + ' ' + p.name };
     if (!L || L.k > 0.6 || (!p.severe && p.key !== 'fog' && p.key !== 'rain')) return same;
     let icon = '☁', name = '阴';
     if (p.key === 'fog') { if (this.fogK > 0.5) return same; icon = '🌫'; name = '薄雾'; }
@@ -906,7 +624,15 @@ class Game {
     const pK = lerp(0.55, 1, altK) * (1 - canopy * 0.4);
     const hK = lerp(0.12, 1, altK) * (1 - canopy * 0.7);
     const fK = lerp(0.18, 1, smoothstep(2350, 3150, alt));
-    this.wxLocal = { k: wxK, rain: (W.p.rainEff || 0) * pK, snow: (W.p.snowEff || 0) * pK, hail: (W.p.hailEff || 0) * hK, fog: W.p.fog * fK };
+    // 风雨雪雾都在云里：飞到云顶以上就没有了（云顶高度见 weather.js）
+    const top = W.p.top || 4500;
+    const above = this.aboveCloud = smoothstep(top - 100, top + 150, alt);
+    const inK = 1 - above;
+    this.wxLocal = { k: wxK, rain: (W.p.rainEff || 0) * pK * inK, snow: (W.p.snowEff || 0) * pK * inK, hail: (W.p.hailEff || 0) * hK * inK, fog: W.p.fog * fK * inK };
+    if (above > 0.7 && !this.wasAbove) {
+      this.wasAbove = true;
+      if (W.p.cloud > 0.5) this.msg(`你钻出了云顶（海拔约 ${Math.round(top / 100) * 100} 米）：头顶一下子晴空万里，脚下是翻滚的云海。${W.p.key !== 'cloudy' && W.p.key !== 'fog' ? `主脊上的${W.p.name}都在云里，云层之上不会下。` : ''}`, 'good');
+    } else if (above < 0.2) this.wasAbove = false;
     // 积雪只在雪线以上（与地表着色的雪线一致）：五月的塘口村不会有冰雪
     const snowLine = SS.snowLine - ((W.p.snowEff || 0) > 0.2 ? 350 : 0);
     this.snowLocal = W.snowCover * smoothstep(snowLine - 115, snowLine + 115, alt);
@@ -921,6 +647,12 @@ class Game {
     ex *= 0.75 + clamp((alt - 2500) / 1000, 0, 1) * 0.35;
     let wind = W.p.windLevel * ex + DN.noise2(this.time * 0.15, 3) * 0.9 + (alt > 3300 && ex > 0.8 ? 0.8 : 0);
     if (this.hazards && this.hazards.gust.state === 'gust') wind += this.hazards.gust.mag * 1.2;
+    // 离地越高越接近自由大气：主脊上乱窜的阵风、对冲气流没了，换成稳定的高空西风，越往上越大
+    const free = this.freeAir = smoothstep(250, 1500, alt - yToAlt(groundAt(P.x, P.z).y));
+    this.windRidge = Math.max(0, wind);   // 地面（树、草）感受到的风
+    if (free > 0) wind = lerp(wind, jetLevel(alt, this.seasonKey), free);
+    const wd = W.windDir;
+    this.windDirLocal = (this.windDirLocal || new THREE.Vector2()).set(lerp(wd.x, 1, free), lerp(wd.y, 0, free)).normalize();   // +x 是东：西风往东吹
     // 避风处
     let shelter = null;
     if (this.world) for (const s of this.world.shelters) { if (Math.hypot(P.x - s.x, P.z - s.z) < s.r) { shelter = s; break; } }
@@ -933,10 +665,11 @@ class Game {
     const nearFire = this.nearFire();
     const dark = this.darkness > 0.7 && !lamp && !nearFire && P.x > 5 && P.x < ROUTE_LENGTH - 30;
     // 开阔台地上可以离开路迹走一段，但走远了照样会迷失方向（起雾时四面八方都一样）
-    const lost = ti.ad > (ti.type === 'cliff' || ti.type === 'ridge' ? 18 : 30 + openAt(P.x) * 45) && P.x > 15 && P.x < ROUTE_LENGTH - 20;
+    const flying = this.player.flying;   // 飞在空中：不算迷路，也不会走到悬崖边
+    const lost = !flying && ti.ad > (ti.type === 'cliff' || ti.type === 'ridge' ? 18 : 30 + openAt(P.x) * 45) && P.x > 15 && P.x < ROUTE_LENGTH - 20;
     // 断崖边缘提示（大雾中只能靠声音）
     const toEdge = edgeAt(ti.type, ti.d, P.x) - ti.ad;
-    if (P.x > 70 && P.x < ROUTE_LENGTH - 90 && ti.type !== 'gully') {
+    if (P.x > 70 && P.x < ROUTE_LENGTH - 90 && ti.type !== 'gully' && !flying) {
       if (toEdge < 6 && !this.edgeWarned) {
         this.edgeWarned = true;
         if (this.fogK > 0.5 || (this.darkness || 0) > 0.7) { this.audio.rockRoll(); this.msg('脚边踢落的碎石滚了下去，过了好几秒才传来回声……你可能正站在悬崖边上！', 'crit'); }
@@ -956,7 +689,7 @@ class Game {
       fog: this.fogK, night, altitude: alt, moving: pl.moving && !this.sleeping, sprint: pl.sprinting, uphill: pl.uphill,
       stone: (ti.type === 'stone' || ti.type === 'pillars') && pl.moving, mud, sleeping: false, inTent: false, shelter, resting: pl.sitting,
       stance: pl.stance, wetGround: W.wetGround, warming: pl.warming, nearFire,
-      lost, severe: !!W.p.severe && wxK > 0.6, goodWeather: key === 'clear' || key === 'cloudy',
+      lost, severe: !!W.p.severe && wxK > 0.6 && above < 0.5, goodWeather: key === 'clear' || key === 'cloudy',
       snowGlare: this.snowLocal > 0.4 && sunY > 0.15 && W.p.cloud < 0.6, poles: pl.polesOut, dark, snowCover: this.snowLocal,
     };
     return this.envNow;
@@ -973,13 +706,17 @@ class Game {
     const sy = sunDir.y;
     const dayK = smoothstep(-0.12, 0.22, sy);
     const twi = smoothstep(-0.18, 0.02, sy) * (1 - smoothstep(0.04, 0.32, sy));
-    const light = W.light;
-    const cloud = W.cloud;
+    // 飞到云顶以上：头顶没有云，阳光直射；越高天越蓝越深（空气稀薄，散射少）
+    const flyAlt = this.state === 'play' ? yToAlt(this.player.pos.y) : 0;
+    const ab = this.state === 'play' ? (this.aboveCloud || 0) : 0, hiK = smoothstep(4200, 10000, flyAlt);
+    const light = lerp(W.light, 1, ab);
+    const cloud = W.cloud * (1 - ab);
     const fogK = this.fogK || 0;
     const z = SKY.nightZ.clone().lerp(SKY.dayZ, dayK).lerp(SKY.setZ, twi * 0.7);
     const h = SKY.nightH.clone().lerp(SKY.dayH, dayK).lerp(SKY.setH, twi * 0.85);
     const grey = SKY.grey.clone().multiplyScalar(lerp(0.035, 1, dayK) * lerp(0.5, 1, light));
     z.lerp(grey, cloud * 0.8); h.lerp(grey, cloud * 0.75);
+    if (hiK > 0) z.lerp(new THREE.Color(0.05, 0.13, 0.4).multiplyScalar(lerp(0.06, 1, dayK)), hiK * 0.6);
     const fogC = h.clone().lerp(SKY.fogGrey.clone().multiplyScalar(lerp(0.03, 1, dayK) * lerp(0.45, 1, light)), fogK);
     const U = this.sky.uniforms;
     U.uSunDir.value.copy(sunDir); U.uZenith.value.copy(z); U.uHorizon.value.copy(fogC);
@@ -995,16 +732,7 @@ class Game {
     this.scene.fog.color.copy(fogC);
     let dens = this.wxLocal ? this.wxLocal.fog : W.fog;
     if (this.state === 'title') dens = 0.0006;
-    // 飞上高空：远处的地面隐进蓝色的雾霭里，头顶的天越来越深
-    if (this.state === 'play' && this.player.flying) {
-      const hk = smoothstep(4500, SPACE_ALT, yToAlt(this.player.pos.y));
-      if (hk > 0) {
-        dens = Math.max(dens, 0.0005 + hk * 0.0016);
-        this.scene.fog.color.lerp(new THREE.Color(0.55, 0.68, 0.88).multiplyScalar(lerp(0.05, 1, dayK)), hk * 0.8);
-        U.uZenith.value.lerp(new THREE.Color(0.03, 0.08, 0.25).multiplyScalar(lerp(0.1, 1, dayK)), hk * 0.8);
-        U.uCloud.value *= 1 - hk;
-      }
-    }
+    if (hiK > 0) dens = Math.max(dens, 0.0006 + hiK * 0.0011);   // 从高空往下看，地面隐进蓝灰色的霾里
     this.scene.fog.density = dens + (this.darkness || 0) * 0.002;
     WATER_U.uFogD.value = this.scene.fog.density;
     // 主光源：白天太阳，夜晚月亮
@@ -1035,8 +763,19 @@ class Game {
     cs.uniforms.uShade.value.copy(cs.uniforms.uCol.value).multiplyScalar(0.62);
     cs.uniforms.uFogC.value.copy(fogC);
     const alt = yToAlt(P.y);
-    cs.uniforms.uAlpha.value = smoothstep(2500, 3100, alt) * (1 - fogK) * (1 - W.rain * 0.5);
+    // 云顶：飞上来时脚下的云层（云量越大越连成一片）
+    const top = W.top || 4500, cd = this.cloudDeck;
+    const deck = this.state === 'play' && this.player.flying ? smoothstep(top - 250, top + 50, alt) : 0;
+    cs.uniforms.uAlpha.value = smoothstep(2500, 3100, alt) * (1 - fogK) * (1 - W.rain * 0.5) * (1 - deck);
     cs.mesh.visible = cs.uniforms.uAlpha.value > 0.02;
+    cd.mesh.visible = deck > 0.01;
+    if (cd.mesh.visible) {
+      const U2 = cd.uniforms;
+      cd.mesh.position.set(P.x, altToY(top), P.z);
+      U2.uAlpha.value = deck; U2.uLo.value = lerp(0.68, 0.05, W.cloud); U2.uNear.value = 0;
+      U2.uTime.value = this.time; U2.uCam.value.copy(this.camera.position);
+      U2.uCol.value.copy(cs.uniforms.uCol.value); U2.uShade.value.copy(cs.uniforms.uShade.value); U2.uFogC.value.copy(fogC);
+    }
     // 天气 uniform
     this.wxU.uTime.value = this.time;
     this.wxU.uSnow.value = this.weather.snowCover;
@@ -1063,7 +802,7 @@ class Game {
     }
     this.time += dt;
     if (this.state === 'title') this.titleFrame(dt);
-    else if (this.state === 'play') { if (this.realm === 'space') this.spaceFrame(dt); else if (this.realm === 'moon') this.moonFrame(dt); else this.playFrame(dt); }
+    else if (this.state === 'play') this.playFrame(dt);
     else if (this.state === 'dead' || this.state === 'end') this.endFrame(dt);
     this.ui.tick(dt);
     if (this.touch) this.touch.update();
@@ -1115,10 +854,10 @@ class Game {
     this.gameMin += sdt * GAME_MIN_PER_SEC;
     const hour = this.hour();
     const env = this.updateEnvironment(sdt);
-    this.weather.update(sdt, hour, this.altitude, this.airTemp, (t, ty) => this.msg(t, ty), this.wxK);
+    this.weather.update(sdt, hour, this.altitude, this.airTemp, (t, ty) => { if ((this.aboveCloud || 0) < 0.5) this.msg(t, ty); }, this.wxK);
     for (const ev of this.weather.events) {
       if (ev.type === 'rainbow') { this.msg('雨停了。一道彩虹横跨山谷，美得让人忘记了寒冷。', 'good'); this.surv.mental = Math.min(100, this.surv.mental + 8); }
-      if (ev.type === 'windshift' && this.windLocal > 5) this.msg('风向突然变了，狂风从另一侧扑了过来！', 'warn');
+      if (ev.type === 'windshift' && this.windLocal > 5 && (this.freeAir || 0) < 0.5) this.msg('风向突然变了，狂风从另一侧扑了过来！', 'warn');
     }
     for (const ev of this.weather.events) if (ev.type === 'lightning') {
       this.audio.thunder(ev.dist);
@@ -1134,7 +873,8 @@ class Game {
     const st = this.touch && this.touch.stick;
     this.input.ax = st ? st.x : 0; this.input.ay = st ? st.y : 0;
     if (k.yl) pl.camYaw -= dt * 1.8; if (k.yr) pl.camYaw += dt * 1.8;
-    if (k.pu) pl.camPitch = clamp(pl.camPitch + dt * 1.2, -1.25, 0.95); if (k.pd) pl.camPitch = clamp(pl.camPitch - dt * 1.2, -1.25, 0.95);
+    const [plo, phi] = pl.pitchRange();
+    if (k.pu) pl.camPitch = clamp(pl.camPitch + dt * 1.2, plo, phi); if (k.pd) pl.camPitch = clamp(pl.camPitch - dt * 1.2, plo, phi);
     const coldSway = s.core < 34 ? Math.sin(this.time * 7) * (34 - s.core) * 0.04 : 0;
     // 鬼打墙：浓雾中没有指北针/GPS，方向感会慢慢偏移
     const navDev = this.navDevice();
@@ -1155,7 +895,6 @@ class Game {
     if (s.core < 33.5 || s.mental <= 0) { pl.camYaw += Math.sin(this.time * 0.7) * dt * 0.25; }
     pl.update(sdt, this.input, mods);
     k.jump = false;
-    if (pl.flying && this.god && yToAlt(pl.pos.y) > SPACE_ALT) { this.enterSpace(); return; }   // 冲上 10 km：切到太空视图
     // 飞行边界：再往外就飞出秦岭了
     if (pl.flying) {
       const X0 = -2500, X1 = ROUTE_LENGTH + 2500, DZ = 4000;
@@ -1224,16 +963,16 @@ class Game {
     // 死亡
     if (s.health <= 0) { this.die(s.cause || '体力衰竭'); return; }
     // 世界动态
-    this.world.update(dt, this.time, this.weather.windDir.clone().multiplyScalar(this.windLocal), this.camera.position);
+    this.world.update(dt, this.time, this.weather.windDir.clone().multiplyScalar(this.windRidge ?? this.windLocal), this.camera.position);
     // 高速飞行时地形来不及细化：多给点时间，先保证脚下有地，石头和草等慢下来再补
     const fastFly = pl.flying && (pl.speed3 || 0) > 60;
     this.terrain.update(pl.pos.x, pl.pos.z, fastFly ? 9 : 4, false, fastFly);
     // 相机
     this.camShake = Math.max(0, this.camShake - dt * 6);
     const wob = (s.core < 34 ? (34 - s.core) * 0.4 : 0) + (s.altSick > 60 ? (s.altSick - 60) / 40 : 0) + (s.mental < 15 ? 0.5 : 0);
-    pl.updateCamera(this.camera, dt, this.camShake + (this.windLocal > 7 && !pl.crouch ? (this.windLocal - 7) * 0.4 : 0), wob, this.time);
+    pl.updateCamera(this.camera, dt, this.camShake + (this.windLocal > 7 && !pl.crouch && !pl.flying ? (this.windLocal - 7) * 0.4 : 0), wob, this.time);
     this.updateLighting();
-    this.weather.updateVisuals(this.time % 600, this.camera.position, this.weather.windDir.clone().multiplyScalar(this.windLocal / 3), !!this.shelterNow && !this.shelterNow.weak, this.wxLocal);
+    this.weather.updateVisuals(this.time % 600, this.camera.position, (this.windDirLocal || this.weather.windDir).clone().multiplyScalar(this.windLocal / 3), !!this.shelterNow && !this.shelterNow.weak, this.wxLocal);
     this.updateFX(dt);
     this.updateAudio(dt);
     ui.updateHUD(this);
@@ -1263,8 +1002,10 @@ class Game {
       } else if (ev.type === 'stomp') {
         this.audio.step(this.snowLocal > 0.3 ? 'snow' : 'grass', 5);
       } else if (ev.type === 'takeoff') {
-        this.tip('fly', IS_TOUCH ? '你踏空飞了起来！按住「跳」上升、按住「蹲」下降，摇杆前后左右飞；点「加速」/「减速」换速度档，最快 3.5 马赫。按住「蹲」一直降到地面才会落地。'
-          : '你踏空飞了起来！空格上升、C 下降，WASD 前后左右飞；滚轮或 +/- 换速度档，最快 3.5 马赫。按住 C 一直降到地面才会落地。');
+        this.tip('fly2', IS_TOUCH ? '你踏空飞了起来！摇杆往前就朝视线方向飞——抬头往上、低头往下；按住「跳」/「蹲」竖直升降。点「加速」/「减速」换速度档，最快 3.5 马赫。按住「蹲」一直降到地面才会落地。'
+          : '你踏空飞了起来！W 朝视线方向飞——抬头往上、低头往下，A/D 左右平移；空格 / C 竖直升降。滚轮或 +/- 换速度档，最快 3.5 马赫。按住 C 一直降到地面才会落地。');
+      } else if (ev.type === 'ceiling') {
+        this.tip('flyceil', `海拔 1 万米——飞行上限。这里气温零下四五十度，空气只有地面的三分之一，再往上就是平流层了。`);
       } else if (ev.type === 'boom') {
         this.audio.thunder(2); this.camShake = Math.max(this.camShake, 5);
         this.tip('boom', '「轰」的一声——你突破了音障！（音爆）');
@@ -1312,7 +1053,7 @@ class Game {
     const h = this.hour();
     const sset = SEASONS[this.seasonKey].sunset;
     if (h > sset - 1.5 && h < sset) this.tip('dusk' + Math.floor(this.gameMin / 1440), '天快黑了。尽快赶到营地，按 T 扎营过夜。');
-    if (this.windLocal > 7 && this.player.stance === 'stand' && !this.player.polesOut) this.tip('gale', '风太大了！按 C 蹲行或 Z 匍匐降低重心，展开登山杖(X)能站得更稳。');
+    if (this.windLocal > 7 && this.player.stance === 'stand' && !this.player.polesOut && !this.player.flying) this.tip('gale', '风太大了！按 C 蹲行或 Z 匍匐降低重心，展开登山杖(X)能站得更稳。');
     if (this.darkness > 0.7 && !this.lampOn && inv.has('lamp')) this.tip('lamp' + Math.floor(this.gameMin / 1440), '天黑了，按 F 打开头灯。');
     if (s.status.bleed) this.tip('bleed' + Math.floor(this.gameMin / 600), '你在流血！按 3 使用急救包止血。');
     if (s.status.sprain && !s.status.sprain.bandaged && inv.has('bandage')) this.tip('sprain', '崴脚了。在背包里使用弹性绷带固定。');
@@ -2304,17 +2045,7 @@ class Game {
     const R = this.renderer;
     this.sky.mesh.position.copy(this.camera.position);
     R.setRenderTarget(this.rt);
-    if (this.realm === 'space' || this.realm === 'moon') {
-      // 太空 / 月面：先画星空和天体（不用深度），再画玩家 / 月面地形
-      const sp = this.space, q = this.realm === 'moon' ? this.moonQ : null;
-      R.setClearColor(0x000000, 1); R.clear(); R.autoClear = false;
-      sp.render(R, this.camera, q, this.camera.aspect);
-      sp.renderInside(R);   // 太阳内部的等离子体（画在玩家后面，好看清自己）
-      R.clearDepth();
-      if (this.realm === 'moon') R.render(this.scene, this.camera); else sp.renderFG(R, this.camera, null);
-      R.autoClear = true;
-      this.updateSpaceMarks(q);
-    } else R.render(this.scene, this.camera);
+    R.render(this.scene, this.camera);
     R.setRenderTarget(null);
     R.render(this.postScene, this.postCam);
   }

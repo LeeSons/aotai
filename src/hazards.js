@@ -325,7 +325,7 @@ export class Hazards {
     if (G.state === 'idle') {
       if (G.t <= 0) {
         G.t = 5 + this.rng() * 8;
-        if (exposed && wl >= 4.5) {
+        if (exposed && wl >= 4.5 && !pl.flying) {   // 阵风是贴着山脊的乱流；飞到空中就是稳定的高空风了
           G.state = 'warn'; G.t = 1.1 + this.rng() * 0.5;
           G.mag = (wl - 3.5) * 0.85 * (0.7 + this.rng() * 0.6) * (0.8 + H * 0.2);
           if (ti.type === 'cliff') { const side = cliffSideAt(P.x); const dz = routeDZ(P.x); G.dir.set(-dz, 1).normalize().multiplyScalar(side); }

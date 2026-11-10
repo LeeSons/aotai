@@ -88,7 +88,7 @@ export class Sky {
 // ---------------- 云海 ----------------
 const seaVS = `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
 const seaFS = `
-uniform float uTime; uniform vec3 uCol; uniform vec3 uShade; uniform float uAlpha; uniform vec3 uCam; uniform vec3 uFogC;
+uniform float uTime; uniform vec3 uCol; uniform vec3 uShade; uniform float uAlpha; uniform vec3 uCam; uniform vec3 uFogC; uniform float uLo; uniform float uNear;
 varying vec3 vW;
 float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
 float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -97,17 +97,21 @@ float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<5;i++){ s+=a*vn(p); p*=2.07
 void main(){
   vec2 p = vW.xz * 0.004 + vec2(uTime * 0.004, uTime * 0.0015);
   float n = fbm(p) * 0.7 + fbm(p * 3.1 - uTime * 0.01) * 0.3;
-  float a = smoothstep(0.35, 0.65, n) * uAlpha;
+  float a = smoothstep(uLo, uLo + 0.3, n) * uAlpha;
   float dist = length(vW.xz - uCam.xz);
-  a *= smoothstep(30.0, 120.0, dist) * smoothstep(2600.0, 1200.0, dist);
+  a *= (uNear > 0.5 ? smoothstep(uNear, uNear * 4.0, dist) : 1.0) * smoothstep(2600.0, 1200.0, dist);
   vec3 c = mix(uShade, uCol, smoothstep(0.4, 0.8, n));
+  if (uNear < 0.5) {   // 从上往下看云顶：一团团鼓起的云，向阳面亮、背阴处暗
+    float n3 = fbm(vW.xz * 0.022 + vec2(uTime * 0.003, -uTime * 0.002));
+    c = mix(uShade * 0.82, uCol, smoothstep(0.32, 0.68, n * 0.5 + n3 * 0.5));
+  }
   c = mix(c, uFogC, smoothstep(600.0, 2400.0, dist) * 0.7);
   gl_FragColor = vec4(c, a);
 }`;
 
 export class CloudSea {
   constructor(scene) {
-    this.uniforms = { uTime: { value: 0 }, uCol: { value: new THREE.Color(1, 1, 1) }, uShade: { value: new THREE.Color(0.7, 0.72, 0.78) }, uAlpha: { value: 0.9 }, uCam: { value: new THREE.Vector3() }, uFogC: { value: new THREE.Color() } };
+    this.uniforms = { uTime: { value: 0 }, uCol: { value: new THREE.Color(1, 1, 1) }, uShade: { value: new THREE.Color(0.7, 0.72, 0.78) }, uAlpha: { value: 0.9 }, uCam: { value: new THREE.Vector3() }, uFogC: { value: new THREE.Color() }, uLo: { value: 0.35 }, uNear: { value: 30 } };
     const mat = new THREE.ShaderMaterial({ vertexShader: seaVS, fragmentShader: seaFS, uniforms: this.uniforms, transparent: true, depthWrite: false, fog: false });
     const g = new THREE.PlaneGeometry(5200, 5200, 1, 1); g.rotateX(-Math.PI / 2);
     this.mesh = new THREE.Mesh(g, mat);
