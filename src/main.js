@@ -7,7 +7,7 @@ import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt,
 import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
-import { Player, FLY_GEARS, FLY_GEAR0, gearLabel } from './player.js';
+import { Player, FLY_GEARS, FLY_GEAR0, RUN_GEARS, RUN_GEAR0, gearLabel, gearSpeed } from './player.js';
 import { Inventory, Survival } from './survival.js';
 import { Hazards } from './hazards.js';
 import { Audio } from './audio.js';
@@ -466,7 +466,7 @@ class Game {
         if (pl.stance === 'prone') this.msg('你趴在地上匍匐前进。', 'info'); break;
       }
       case 'Equal': case 'NumpadAdd': case 'Minus': case 'NumpadSubtract':
-        if (this.player.flying) this.flySpeedStep(code === 'Equal' || code === 'NumpadAdd' ? 1 : -1);
+        if (this.player.flying || this.god) this.speedStep(code === 'Equal' || code === 'NumpadAdd' ? 1 : -1);
         break;
       case 'KeyX':
         if (this.player.togglePoles()) { this.audio.pole(); this.msg(this.player.polesOut ? '你展开了登山杖。' : '你收起了登山杖。', 'info'); }
@@ -508,6 +508,17 @@ class Game {
     this.resize();
   }
 
+  // 无敌模式换档：踏空时调飞行速度，在地面上调快跑 / 行走速度
+  speedStep(d) { if (this.player.flying) this.flySpeedStep(d); else if (this.god) this.runSpeedStep(d); }
+  runSpeedStep(d) {
+    const pl = this.player;
+    const g0 = pl.runGear ?? RUN_GEAR0;
+    pl.runGear = clamp(g0 + d, 0, RUN_GEARS.length - 1);
+    const g = RUN_GEARS[pl.runGear], walk = Math.max(3.3, gearSpeed(g, this.airTemp) / 3);
+    const top = pl.runGear === RUN_GEARS.length - 1, low = pl.runGear === 0;
+    this.ui.alert(`快跑速度：${gearLabel(g, this.airTemp)} · 行走 ${walk < 10 ? walk.toFixed(1) : Math.round(walk)} m/s${top && d > 0 && g0 === pl.runGear ? '（已是最快）' : low && d < 0 && g0 === pl.runGear ? '（已是最慢）' : ''}`, 1.3);
+    if (pl.runGear > RUN_GEAR0 + 3) this.tip('godrun', '跑得太快时，翻过山脊会被甩到半空，按物理规律抛出去再落下来（无敌模式不会摔伤）。高速撞上陡峭的岩壁会被挡住。');
+  }
   // 飞行换档：d = +1 加速 / −1 减速
   flySpeedStep(d) {
     const pl = this.player;
@@ -526,7 +537,7 @@ class Game {
     if (this.god) {
       s.fill();
     }
-    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按「跳」起飞，踏空后摇杆往视线方向飞（抬头往上、低头往下），按住「跳」/「蹲」竖直升降，点「加速」/「减速」换档（最快 3.5 马赫），按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒，能跳 2 米高；长按空格起飞，踏空后 W 往视线方向飞（抬头往上、低头往下），空格 / C 竖直升降，滚轮或 +/- 换速度档（最快 3.5 马赫），按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
+    if (this.state === 'play') this.msg(this.god ? IS_TOUCH ? '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒（点「＋」「－」调速，最快 2 马赫），能跳 2 米高；长按「跳」起飞，踏空后摇杆往视线方向飞（抬头往上、低头往下），按住「跳」/「蹲」竖直升降，点「加速」/「减速」换档（最快 3.5 马赫），按住「蹲」降到地面才落地。' : '无敌模式已开启：所有指标锁满，不会受伤生病。快跑 10 米/秒（+/- 调速，最快 2 马赫），能跳 2 米高；长按空格起飞，踏空后 W 往视线方向飞（抬头往上、低头往下），空格 / C 竖直升降，滚轮或 +/- 换速度档（最快 3.5 马赫），按住 C 降到地面才落地。' : '无敌模式已关闭。', this.god ? 'good' : 'info');
   }
 
   gfxMenu(back) {
@@ -895,14 +906,14 @@ class Game {
     if (s.core < 33.5 || s.mental <= 0) { pl.camYaw += Math.sin(this.time * 0.7) * dt * 0.25; }
     pl.update(sdt, this.input, mods);
     k.jump = false;
-    // 飞行边界：再往外就飞出秦岭了
-    if (pl.flying) {
+    // 飞行 / 无敌模式边界：再往外就出了秦岭
+    if (pl.flying || this.god) {
       const X0 = -2500, X1 = ROUTE_LENGTH + 2500, DZ = 4000;
       const zc = routeZ(clamp(pl.pos.x, X0, X1)), d = pl.pos.z - zc;
       if (pl.pos.x < X0 || pl.pos.x > X1 || Math.abs(d) > DZ) {
         pl.pos.x = clamp(pl.pos.x, X0, X1); pl.pos.z = zc + clamp(d, -DZ, DZ);
         pl.vel.x *= 0.2; pl.vel.z *= 0.2;
-        this.tip('flyedge', '再往外就飞出秦岭了——这里是飞行边界，掉头吧。');
+        this.tip('flyedge', '再往外就出了秦岭——这里是边界，掉头吧。');
       }
     }
     this.handlePlayerEvents();
@@ -965,7 +976,7 @@ class Game {
     // 世界动态
     this.world.update(dt, this.time, this.weather.windDir.clone().multiplyScalar(this.windRidge ?? this.windLocal), this.camera.position);
     // 高速飞行时地形来不及细化：多给点时间，先保证脚下有地，石头和草等慢下来再补
-    const fastFly = pl.flying && (pl.speed3 || 0) > 60;
+    const fastFly = (pl.speed3 || 0) > 60;   // 高速飞行或无敌模式高速奔跑
     this.terrain.update(pl.pos.x, pl.pos.z, fastFly ? 9 : 4, false, fastFly);
     // 相机
     this.camShake = Math.max(0, this.camShake - dt * 6);

@@ -278,6 +278,11 @@ html.touch #touch-ui.off { display: none; }
 #tb-sprint { width: 56px; height: 56px; right: calc(104px + var(--sr)); bottom: calc(14px + var(--sb)); }
 #tb-crouch { width: 54px; height: 54px; right: calc(96px + var(--sr)); bottom: calc(84px + var(--sb)); }
 #tb-prone { width: 54px; height: 54px; right: calc(26px + var(--sr)); bottom: calc(106px + var(--sb)); }
+#tb-faster, #tb-slower { width: 44px; height: 44px; }
+#t-act #tb-faster .lb, #t-act #tb-slower .lb { font-size: 20px; }
+#tb-faster { right: calc(160px + var(--sr)); bottom: calc(98px + var(--sb)); }
+#tb-slower { right: calc(170px + var(--sr)); bottom: calc(40px + var(--sb)); }
+.tb.hide { display: none; }
 #touch-ui.qte #tb-jump { border-color: var(--red); background: rgba(200,40,30,.45); animation: tpulse .45s infinite; }
 @keyframes tpulse { 50% { transform: scale(1.1); } }
 

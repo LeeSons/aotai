@@ -14,6 +14,9 @@ const GOD_RUN = 10, GOD_JUMP_V = Math.sqrt(2 * GRAVITY * 2.0);
 // 飞行速度分档：低速按 m/s，高速按马赫，最快 3.5 马赫。声速随气温变：c = 331.3 + 0.606·T（m/s）
 export const FLY_GEARS = [5, 10, 20, 30, 50, 80, 120, 200, 'M1', 'M1.5', 'M2', 'M2.5', 'M3', 'M3.5'];
 export const FLY_GEAR0 = 3;   // 默认 30 m/s
+// 无敌模式在地面上：快跑速度也分档，最快 2 马赫；行走是快跑的 1/3（不低于正常步行 3.3 m/s）。默认档 = 快跑 10 m/s
+export const RUN_GEARS = [5, 7, 10, 15, 20, 30, 50, 80, 120, 200, 'M1', 'M1.5', 'M2'];
+export const RUN_GEAR0 = RUN_GEARS.indexOf(10);
 export const soundSpeed = (tC) => 331.3 + 0.606 * tC;
 export const gearSpeed = (g, tC) => typeof g === 'string' ? parseFloat(g.slice(1)) * soundSpeed(tC) : g;
 export const gearLabel = (g, tC) => typeof g === 'string' ? `马赫 ${g.slice(1)}（约 ${Math.round(gearSpeed(g, tC))} m/s）` : `${g} m/s`;
@@ -76,8 +79,10 @@ export class Player {
     if (this.warming) return STANCE_NAME.warm;
     if (this.sliding) return STANCE_NAME.slide;
     if (this.sitting) return STANCE_NAME.sit;
-    if (this.sprinting) return STANCE_NAME.run;
-    return STANCE_NAME[this.stance];
+    const v = this.speedNow || 0;
+    const fast = this.god && v > 12 ? ` ${Math.round(v)} m/s · 马赫 ${(v / soundSpeed(this.airT ?? 10)).toFixed(2)}` : '';
+    if (this.sprinting) return STANCE_NAME.run + fast;
+    return STANCE_NAME[this.stance] + fast;
   }
 
   // ---------------- 模型 ----------------
@@ -274,8 +279,11 @@ export class Player {
     // 快跑会让人站起来
     if (input.sprint && wantMove && this.stance === 'crouch' && mods.canSprint) this.setStance('stand');
     this.sprinting = input.sprint && wantMove && mods.canSprint && this.stance === 'stand' && !this.sliding && fwdIn && !locked;
-    // 无敌模式：快跑 10 m/s，不受负重、地形、坡度拖慢
-    const base = this.sprinting ? (mods.god ? GOD_RUN : SPEED.run) : this.stance === 'crouch' ? SPEED.crouch : this.stance === 'prone' ? SPEED.prone : SPEED.walk;
+    // 无敌模式：快跑按档位（默认 10 m/s，最快 2 马赫），行走是快跑的 1/3；不受负重、地形、坡度拖慢
+    this.god = !!mods.god;
+    if (this.runGear === undefined) this.runGear = RUN_GEAR0;
+    const godRun = mods.god ? gearSpeed(RUN_GEARS[this.runGear], mods.airT ?? 10) : GOD_RUN;
+    const base = this.sprinting ? (mods.god ? godRun : SPEED.run) : this.stance === 'crouch' ? SPEED.crouch : this.stance === 'prone' ? SPEED.prone : mods.god ? Math.max(SPEED.walk, godRun / 3) : SPEED.walk;
     let speed = base * (mods.god ? 1 : mods.speedMult) * (back ? 0.6 : strafe && !fwdIn ? 0.85 : 1);
     if (analog && !this.sprinting) speed *= lerp(0.4, 1, aMag);   // 摇杆推得越远走得越快
     if (this.polesOut && !this.sprinting && this.stance === 'stand') speed *= 1.04;
@@ -354,15 +362,27 @@ export class Player {
 
     // ------- 水平移动 + 台阶 -------
     const maxStep = this.onGround ? (this.stance === 'prone' ? 0.6 : 0.95) : 1.6;
+    let footY = this.onGround ? gNow.y : p.y;
     const tryMove = (dx, dz) => {
       const nx = p.x + dx, nz = p.z + dz;
       const g2 = groundAt(nx, nz);
-      const footY = this.onGround ? gNow.y : p.y;
       if (g2.y - footY > maxStep && g2.onRock) return false;
-      p.x = nx; p.z = nz; return true;
+      p.x = nx; p.z = nz;
+      if (this.onGround) footY = g2.y;
+      return true;
     };
+    // 高速时一帧走好几米：拆成每段不超过 0.35 米（正常快跑一帧走的距离）逐段判断岩石台阶，
+    // 这样高速和低速爬同一块岩石的结果一样（低速时就是一段，和原来一样）
     const dx = this.vel.x * dt, dz = this.vel.z * dt;
-    if (!tryMove(dx, dz)) { if (!tryMove(dx, 0)) this.vel.x = 0; if (!tryMove(0, dz)) this.vel.z = 0; }
+    const nSub = Math.min(96, Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.35)));
+    for (let i = 0; i < nSub; i++) {
+      const sx = dx / nSub, sz = dz / nSub;
+      if (!tryMove(sx, sz)) {
+        const okX = tryMove(sx, 0), okZ = tryMove(0, sz);
+        if (!okX) this.vel.x = 0; if (!okZ) this.vel.z = 0;
+        if (!okX && !okZ) break;
+      }
+    }
     const tc = this.onGround || p.y - gNow.y < 4 ? treeCollide(p.x, p.z, 0.35) : null;   // 飞在树梢以上不会撞树
     if (tc) { p.x = tc.x; p.z = tc.z; }
 
@@ -409,12 +429,12 @@ export class Player {
     // 飞行速度（含竖直）与音障
     const v3 = this.flying ? Math.hypot(hspeed, this.vel.y) : hspeed;
     const c = soundSpeed(this.airT);
-    if (this.flying && v3 >= c && (this.speed3 || 0) < c) this.events.push({ type: 'boom' });
+    if (v3 >= c && (this.speed3 || 0) < c) this.events.push({ type: 'boom' });   // 飞行或无敌模式快跑突破音障
     this.speed3 = v3;
     this.moving = hspeed > 0.35;
     if (this.moving && this.onGround && !this.sliding) {
       this.stepAcc += hspeed * dt;
-      const stride = this.sprinting ? 1.2 : this.stance === 'crouch' ? 0.55 : this.stance === 'prone' ? 0.5 : 0.8;
+      const stride = Math.max(this.sprinting ? 1.2 : this.stance === 'crouch' ? 0.55 : this.stance === 'prone' ? 0.5 : 0.8, (hspeed - 6) / 4);   // 无敌模式高速时步频封顶，脚步声不连成一片
       if (this.stepAcc > stride) { this.stepAcc = 0; this.events.push({ type: 'step', rock: g.onRock, speed: hspeed, stance: this.stance, pole: this.polesOut }); }
     }
     if (wantMove && !this.sliding && !locked) {

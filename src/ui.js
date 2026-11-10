@@ -73,7 +73,7 @@ export class UI {
   helpHTML() {
     return `<div class="keys-table">
       <div>W A S D</div><div>慢走（默认步行速度）</div>
-      <div>Shift</div><div>快跑（消耗大量体力，加重高反；石海里奔跑极易摔倒）</div>
+      <div>Shift</div><div>快跑（消耗大量体力，加重高反；石海里奔跑极易摔倒）。无敌模式下 +/- 调快跑 / 行走速度（快跑 5 m/s 到 2 马赫，行走是快跑的 1/3）</div>
       <div>C</div><div>蹲下 / 蹲行：抵御阵风，不易被羚牛发现，石海更稳</div>
       <div>Z</div><div>趴下 / 匍匐：狂风中最稳，但很慢、贴地更冷更湿；打雷时别趴，要蹲</div>
       <div>X</div><div>展开 / 收起登山杖：更稳、更抗风、爬坡省力（雷暴时记得收起）</div>

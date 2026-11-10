@@ -35,6 +35,8 @@ const ACT = [
   { id: 'sprint', lb: '跑', cp: '快跑', down: (t) => t.g.player.flying ? t.g.flySpeedStep(1) : t.toggleSprint() },   // 踏空时是「加速」
   { id: 'crouch', lb: '蹲', cp: '蹲下', hold: 'KeyC' },   // 按下切换蹲 / 站；踏空时按住是下降
   { id: 'prone', lb: '趴', cp: '趴下', down: (t) => t.g.player.flying ? t.g.flySpeedStep(-1) : tap('KeyZ') },   // 踏空时是「减速」
+  { id: 'faster', lb: '＋', cp: '加速', down: (t) => t.g.speedStep(1) },    // 只在无敌模式显示：地面上调快跑速度，踏空时调飞行速度
+  { id: 'slower', lb: '－', cp: '减速', down: (t) => t.g.speedStep(-1) },
 ];
 const QUICK = [
   { id: 'drink', lb: '喝水', code: 'Digit1' },
@@ -160,6 +162,7 @@ export class TouchControls {
         <div>右侧滑动</div><div>转动视角；双指捏合 / 张开调整第三人称距离</div>
         <div>跳</div><div>跳跃 / 起身。脚下打滑时（QTE）点击屏幕任意处稳住。无敌模式下长按起飞：踏空后摇杆往视线方向飞（抬头往上、低头往下），按住「跳」/「蹲」竖直升降，「跑」/「趴」变成加速 / 减速（最快 3.5 马赫），按住「蹲」降到地面才落地</div>
         <div>跑</div><div>快跑开关（消耗大量体力；松开摇杆自动停下）</div>
+        <div>＋ / －</div><div>只在无敌模式出现：在地面上调快跑 / 行走速度（快跑 5 m/s 到 2 马赫，行走是快跑的 1/3），踏空时调飞行速度</div>
         <div>蹲 / 趴</div><div>蹲下抵御阵风、石海更稳；趴下在狂风中最稳；打雷时要蹲，别趴</div>
         <div>互动</div><div>靠近水源、路牌、驴友、补给点时，画面下方会出现互动按钮；野外下雨、有积雪或雨后有水洼时，会出现“就地取水”（接雨水 / 融雪 / 舀积水）</div>
         <div>喝水 / 进食 / 急救</div><div>快速喝一口水（身上冷时优先喝保温壶）/ 吃零食 / 用急救包</div>
@@ -315,6 +318,7 @@ export class TouchControls {
     if (!show) return;
     const pl = g.player, inv = g.inv;
     this.set('sprint', 'on', g.keys.sprint && !pl.flying);
+    this.set('faster', 'hide', !g.god); this.set('slower', 'hide', !g.god);
     this.text('sprint', '.cp', pl.flying ? '加速' : '快跑');
     this.text('prone', '.cp', pl.flying ? '减速' : '趴下');
     this.set('crouch', 'on', pl.stance === 'crouch');

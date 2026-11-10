@@ -18,7 +18,7 @@
   if (t) document.documentElement.classList.add('touch');
 })();
 </script>
-<link rel="stylesheet" href="style.css">
+<link id="css" rel="stylesheet" href="style.css">
 </head>
 <body>
 <canvas id="gl"></canvas>
@@ -197,6 +197,11 @@
     document.head.appendChild(im);
     var s = document.createElement('script'); s.type = 'module'; s.src = 'src/main.js?v=' + v;
     document.body.appendChild(s);
+    // 样式表也换成带版本号的（先加载新的再撤掉旧的，免得画面闪一下没样式）
+    var old = document.getElementById('css'), css = document.createElement('link');
+    css.rel = 'stylesheet'; css.href = 'style.css?v=' + v;
+    css.onload = function () { if (old && old.parentNode) old.parentNode.removeChild(old); };
+    document.head.appendChild(css);
   }
   var done = false, go = function (v) { if (!done) { done = true; boot(v); } };
   setTimeout(function () { go(String(Date.now())); }, 4000);   // 网络太慢就别等了，直接不走缓存
