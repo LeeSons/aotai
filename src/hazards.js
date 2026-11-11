@@ -1,7 +1,7 @@
 // ===================== 危险：羚牛 / 蛇 / 落石 / 阵风 / 雷击 / 失衡 / 湿滑结霜 / 蜱虫 / 幻觉 / 雾中怪事 =====================
 import * as THREE from 'three';
 import { heightAt, normalAt, terrainInfo, cliffSideAt } from './terrain.js';
-import { surfMat } from './materials.js';
+import { surfMat, plainMat } from './materials.js';
 import { rockGeo } from './geo.js';
 import { ROUTE, routeZ, routeDZ, yToAlt, season } from './data.js';
 import { clamp, lerp, smoothstep } from './noise.js';
@@ -58,7 +58,7 @@ function takinModel() {
     add(tube, horn, head, s * 0.12, 0.18, 0.1);
     add(new THREE.SphereGeometry(0.075, 10, 8), horn, head, s * 0.12, 0.18, 0.1);
     const ear = add(new THREE.ConeGeometry(0.06, 0.2, 6), dark, head, s * 0.3, 0.06, 0.02); ear.rotation.z = -s * 1.4;
-    add(new THREE.SphereGeometry(0.03, 6, 6), new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.2 }), head, s * 0.2, 0.05, 0.38);
+    add(new THREE.SphereGeometry(0.03, 6, 6), plainMat({ color: 0x050505, roughness: 0.2 }), head, s * 0.2, 0.05, 0.38);
   }
   g.userData.head = head;
   // 腿：粗壮，带膝关节
@@ -69,7 +69,7 @@ function takinModel() {
     add(up, fur, L, 0, -0.25, 0);
     const K = new THREE.Group(); K.position.y = -0.55; L.add(K);
     add(new THREE.CapsuleGeometry(0.085, 0.38, 4, 8), dark, K, 0, -0.22, 0);
-    add(new THREE.CylinderGeometry(0.09, 0.1, 0.1, 8), new THREE.MeshStandardMaterial({ color: 0x111111 }), K, 0, -0.5, 0.02);
+    add(new THREE.CylinderGeometry(0.09, 0.1, 0.1, 8), plainMat({ color: 0x111111 }), K, 0, -0.5, 0.02);
     g.userData.legs.push({ L, K });
   }
   const tail = add(new THREE.ConeGeometry(0.07, 0.3, 6), dark, g, 0, 1.45, -1.18); tail.rotation.x = -2.6;
@@ -171,7 +171,7 @@ function lerpAngle(a, b, t) { let d = b - a; d = Math.atan2(Math.sin(d), Math.co
 // ---------------- 蛇 ----------------
 class Snake {
   constructor(scene, x, z) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x4f4a2c, roughness: 0.5 });
+    const mat = plainMat({ color: 0x4f4a2c, roughness: 0.5 });
     const g = new THREE.Group();
     const pts = []; for (let i = 0; i <= 30; i++) { const a = i / 30 * Math.PI * 3.2; const r = 0.26 - i * 0.006; pts.push(new THREE.Vector3(Math.cos(a) * r, 0.05 + i * 0.008, Math.sin(a) * r)); }
     pts.push(new THREE.Vector3(0.05, 0.32, 0.12));

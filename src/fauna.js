@@ -1,11 +1,12 @@
 // ===================== 鸟语花香：鸟群 / 蝴蝶 / 高空盘旋的鹰 =====================
 import * as THREE from 'three';
+import { plainMat } from './materials.js';
 import { heightAt, terrainInfo } from './terrain.js';
 import { season } from './data.js';
 
-const birdMat = new THREE.MeshStandardMaterial({ color: 0x1e1c1a, roughness: 0.8, side: THREE.DoubleSide });
-const eagleMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.8, side: THREE.DoubleSide });
-const eagleHead = new THREE.MeshStandardMaterial({ color: 0xd8cfb8, roughness: 0.8 });
+const birdMat = plainMat({ color: 0x1e1c1a, roughness: 0.8, side: THREE.DoubleSide });
+const eagleMat = plainMat({ color: 0x3a2a1c, roughness: 0.8, side: THREE.DoubleSide });
+const eagleHead = plainMat({ color: 0xd8cfb8, roughness: 0.8 });
 
 function wingGeo(span, chord) {
   const g = new THREE.BufferGeometry();
@@ -30,7 +31,7 @@ function makeBird(scale = 1, mat = birdMat, eagle = false) {
 
 function makeButterfly(color) {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.15 });
+  const mat = plainMat({ color, roughness: 0.6, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.15 });
   const shape = new THREE.Shape(); shape.moveTo(0, 0); shape.bezierCurveTo(0.08, 0.12, 0.2, 0.1, 0.16, -0.02); shape.bezierCurveTo(0.18, -0.1, 0.06, -0.12, 0, 0);
   const geo = new THREE.ShapeGeometry(shape); geo.rotateX(-Math.PI / 2);
   const wl = new THREE.Group(), wr = new THREE.Group();

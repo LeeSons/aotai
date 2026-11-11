@@ -698,9 +698,71 @@ export function buildVegetation(seasonKey) {
     }
     pack('dead', bark, [], [], lo, false);
   }
+  // 远山上的林子：五百米开外的地块只铺极简的树（针叶是两层锥，阔叶是一丛），数量少一些、个头大一些
+  if (!GEO.farCone) {
+    const shade = (c, x, y) => c.multiplyScalar(0.5 + 0.5 * smoothstep(0.3, 3.2, y));
+    GEO.farCone = merge([
+      paint(xf(new THREE.ConeGeometry(1.0, 2.3, 6, 1, true), { p: [0, 1.6, 0] }).toNonIndexed(), new THREE.Color(1, 1, 1), shade),
+      paint(xf(new THREE.ConeGeometry(0.64, 2.0, 6, 1, true), { p: [0, 3.0, 0], r: [0, 0.5, 0] }).toNonIndexed(), new THREE.Color(1, 1, 1), shade),
+    ]);
+    const rb = mulberry32(71), bg = new THREE.IcosahedronGeometry(1, 0);
+    displace(bg, (v) => v.multiplyScalar(0.8 + rb() * 0.45));
+    GEO.farBlob = paint(xf(crease(bg, 80), { s: [1, 0.72, 1], p: [0, 1.9, 0] }), new THREE.Color(1, 1, 1), (c, x, y) => c.multiplyScalar(0.5 + 0.5 * smoothstep(1.3, 2.6, y)));
+  }
+  FAR_COL = {};
+  for (const k of ['fir', 'larch', 'birch', 'maple', 'maple2']) FAR_COL[k] = FOL[k][sk] ? col3(FOL[k][sk]).multiplyScalar(1.25) : null;
   VEG_SEASON = sk;
 }
 let VEG_SEASON = null;
+let FAR_COL = {};
+
+// 给远处的地块（树木实例还没生成的那几圈）铺一层极简的树。规则和近处一致：什么海拔长什么树，陡坡和路上不长
+function buildFarTrees(chunk) {
+  const x0 = chunk.cx * CHUNK, z0 = chunk.cz * CHUNK;
+  const rnd = mulberry32((chunk.cx * 40503) ^ (chunk.cz * 69069) ^ 0x2f6e2b1);
+  const cones = [], blobs = [];
+  const tries = QUAL.lite ? 260 : 420;
+  for (let n = 0; n < tries; n++) {
+    const x = x0 + rnd() * CHUNK, z = z0 + rnd() * CHUNK;
+    const r1 = rnd(), r2 = rnd(), r3 = rnd();
+    const ti = terrainInfo(x, z);
+    if (ti.ad < 4) continue;
+    let t = ti.type; if (ti.ad > 260 + openAt(x) * 260) t = 'far';
+    const y = heightAt(x, z), alt = yToAlt(y);
+    let tp = 0, kind = null;
+    if (t === 'forest' || t === 'far') {
+      if (alt < 2300) { tp = 0.45; kind = r2 < 0.3 ? 'maple' : r2 < 0.5 ? 'maple2' : r2 < 0.72 ? 'birch' : 'fir'; }
+      else if (alt < 2700) { tp = 0.42; kind = r2 < 0.35 ? 'birch' : r2 < 0.45 ? 'maple2' : 'fir'; }
+      else if (alt < 3050) { tp = 0.38; kind = r2 < 0.65 ? 'fir' : 'larch'; }
+      else if (alt < 3350) { tp = 0.16; kind = 'larch'; }
+    } else if (t === 'dead') { tp = 0.1; kind = 'fir'; }
+    else if (t === 'gully') { tp = 0.5; kind = r2 < 0.45 ? 'maple' : r2 < 0.75 ? 'birch' : 'maple2'; }
+    else if (t === 'meadow' && alt < 3250) { tp = 0.1; kind = 'larch'; }
+    if (!kind || r1 > tp) continue;
+    const col = FAR_COL[kind];
+    if (!col) continue;                        // 冬天落了叶的树：远看只剩细枝，不画
+    if (slopeNY(x, z) < 0.72) continue;
+    const s = (0.85 + r3 * 0.6) * 1.55, v = 0.8 + rnd() * 0.4;
+    (kind === 'fir' || kind === 'larch' ? cones : blobs).push({ x, y: y - 0.3, z, s, sy: kind === 'birch' ? 1.5 : kind === 'larch' ? 1.15 : 1, sx: kind === 'birch' ? 0.62 : kind === 'larch' ? 0.8 : 1, rot: rnd() * 6.28, r: col.r * v, g: col.g * v, b: col.b * (v * 0.9 + 0.1) });
+  }
+  const group = new THREE.Group();
+  for (const [list, geo, k] of [[cones, GEO.farCone, 1.9], [blobs, GEO.farBlob, 2.5]]) {
+    if (!list.length) continue;
+    const im = new THREE.InstancedMesh(geo, MAT.leaf, list.length);
+    list.forEach((t, i) => {
+      _q.setFromEuler(_e.set(0, t.rot, 0));
+      _s.set(t.s * k * t.sx, t.s * k * t.sy, t.s * k * t.sx);
+      _p.set(t.x, t.y, t.z);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+      im.setColorAt(i, tmpC2.setRGB(t.r, t.g, t.b));
+    });
+    im.castShadow = false; im.receiveShadow = false;
+    im.computeBoundingSphere();
+    group.add(im);
+  }
+  return group.children.length ? group : null;
+}
 
 const FLOWER_COLORS = {
   spring: [[0.95, 0.75, 0.85], [1, 1, 0.95], [0.75, 0.55, 0.95]],
@@ -904,7 +966,7 @@ function buildObjects(chunk) {
   byV.forEach((list, v) => {
     if (!list.length) return;
     const im = new THREE.InstancedMesh(GEO.rocks[v][lod], MAT.rock, list.length);
-    im.userData.lods = GEO.rocks[v];
+    im.userData.lods = GEO.rocks[v]; im.layers.enable(2);      // 第 2 层：会被画进中距离阴影图
     list.forEach((r, k) => {
       _q.setFromEuler(_e.set(0, r.rot, 0));
       _s.set(r.r, r.h / 0.85, r.r);
@@ -924,7 +986,7 @@ function buildObjects(chunk) {
     const list = trees[kind];
     if (!list.length || !GEO[kind]) continue;
     const im = new THREE.InstancedMesh(GEO[kind][lod], lod ? MAT.leaf : HI_MATS[kind], list.length);
-    im.userData.lods = GEO[kind]; im.userData.tree = kind;
+    im.userData.lods = GEO[kind]; im.userData.tree = kind; im.layers.enable(2);
     list.forEach((t, k) => {
       _q.setFromEuler(_e.set(0, t.rot, 0));
       _s.set(t.s, t.s * (0.85 + (t.rot % 0.3)), t.s);
@@ -1046,10 +1108,10 @@ export class TerrainManager {
       if (!c) { c = new Chunk(cx, cz); this.chunks.set(k, c); }
       c.dist = dist; c.alive = true;
       const res = this.wantedRes(dist, fast);
-      const needObj = dist <= 3 && !fast, needGrass = dist <= 1 && !fast;
+      const needObj = dist <= 3 && !fast, needGrass = dist <= 1 && !fast, needFar = dist > 3 && !c.objs && !c.farDone;
       const resBad = fast ? c.res < res : c.res !== res;
       c.resBad = resBad;
-      if (resBad || (needObj && !c.objs) || (needGrass && !c.grassDone)) tasks.push(c);
+      if (resBad || (needObj && !c.objs) || (needGrass && !c.grassDone) || needFar) tasks.push(c);
     }
     tasks.sort((a, b) => a.dist - b.dist);
     for (const c of tasks) {
@@ -1058,12 +1120,13 @@ export class TerrainManager {
       if (c.resBad) {
         const g = buildTerrainGeo(c.cx, c.cz, res);
         if (c.mesh) { c.mesh.geometry.dispose(); c.mesh.geometry = g; }
-        else { c.mesh = new THREE.Mesh(g, MAT.terrain); c.mesh.receiveShadow = true; c.mesh.castShadow = false; this.scene.add(c.mesh); }
+        else { c.mesh = new THREE.Mesh(g, MAT.terrain); c.mesh.receiveShadow = true; c.mesh.castShadow = false; c.mesh.layers.enable(1); this.scene.add(c.mesh); }      // 第 1 层：会被画进远距离地形阴影图
         c.res = res;
         if (!force) continue; // 每块只做一件事，下一帧再继续
       }
+      if (c.dist > 3 && !c.objs && !c.farDone) { c.far = buildFarTrees(c); c.farDone = true; if (c.far) this.scene.add(c.far); continue; }
       if (fast) continue;
-      if (c.dist <= 3 && !c.objs) { c.objs = buildObjects(c); this.scene.add(c.objs); if (!force) continue; }
+      if (c.dist <= 3 && !c.objs) { c.objs = buildObjects(c); this.scene.add(c.objs); this.dropFar(c); if (!force) continue; }
       if (c.dist <= 1 && !c.grassDone) { c.grass = buildGrass(c); c.grassDone = true; if (c.grass) this.scene.add(c.grass); }
     }
     // 卸载
@@ -1071,7 +1134,7 @@ export class TerrainManager {
       const dist = Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz));
       if (dist > R + 1) { this.disposeChunk(c); this.chunks.delete(k); continue; }
       if (dist > 4 && c.objs) this.disposeObjs(c);
-      else if (c.objs) setChunkLod(c, dist <= HI_DIST() ? 0 : 1);
+      else if (c.objs) { setChunkLod(c, dist <= HI_DIST() ? 0 : 1); if (c.farDone) this.dropFar(c); }
       if (dist > 2 && c.grassDone) { if (c.grass) this.disposeGroup(c.grass); c.grass = null; c.grassDone = false; }
       else if (c.grass) { const gg = dist === 0 ? GEO.grass : GEO.grassLo; for (const o of c.grass.children) if (o.userData.grass && o.geometry !== gg) o.geometry = gg; }
     }
@@ -1083,10 +1146,19 @@ export class TerrainManager {
     for (const t of c.trees) hashRemove(treeHash, t);
     c.objs = null; c.rocks = []; c.trees = [];
   }
+  // 画中距离阴影图时用：所有地块的树和石头临时换成简化模型（影子只要个大概轮廓），画完换回来
+  withLowLod(fn) {
+    const saved = [];
+    for (const [, c] of this.chunks) if (c.objs && c.lod === 0) { saved.push(c); setChunkLod(c, 1); }
+    try { fn(); } finally { for (const c of saved) setChunkLod(c, 0); }
+  }
+  // 撤掉远景树（近处的完整树木已经生成，或者整块卸载）
+  dropFar(c) { if (c.far) this.disposeGroup(c.far); c.far = null; c.farDone = false; }
   disposeChunk(c) {
     if (c.mesh) { this.scene.remove(c.mesh); c.mesh.geometry.dispose(); }
     if (c.objs) this.disposeObjs(c);
     if (c.grass) this.disposeGroup(c.grass);
+    this.dropFar(c);
   }
   disposeGroup(g) { this.scene.remove(g); g.traverse(o => { if (o.isInstancedMesh) o.dispose(); }); }
   clearAll() { for (const [, c] of this.chunks) this.disposeChunk(c); this.chunks.clear(); }

@@ -67,14 +67,24 @@ uniform sampler2D tDepthHalf, tShadow;
 uniform mat4 uShadowMatrix, uCamWorld;
 uniform vec3 uCamPos, uSunRad, uSunDir;
 uniform vec2 uTanHalf;
-uniform float uHasShadow, uMaxDist, uSigma, uFrame;
+uniform float uHasShadow, uMaxDist, uSigma, uFrame, uFarOn, uFarBias;
+uniform sampler2D tFarSh; uniform mat4 uFarShM;
 float hg(float mu, float g){ float g2 = g * g; return (1.0 - g2) / (12.566371 * pow(max(1.0 + g2 - 2.0 * g * mu, 1e-4), 1.5)); }
+// 远处的山挡没挡住这一点（空气里的光柱被山影切开）
+float farVis(vec3 p){
+  if (uFarOn < 0.003) return 1.0;
+  vec4 fc = uFarShM * vec4(p, 1.0);
+  if (fc.x < 0.0 || fc.x > 1.0 || fc.y < 0.0 || fc.y > 1.0 || fc.z > 1.0) return 1.0;
+  return mix(1.0, step(fc.z - uFarBias, texture2D(tFarSh, fc.xy).r), uFarOn);
+}
 float sunVis(vec3 p){
+  float fv = farVis(p);
+  if (uHasShadow < 0.5) return fv;
   vec4 sc = uShadowMatrix * vec4(p, 1.0);
   sc.xyz /= sc.w;
-  if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0 || sc.z < 0.0) return 1.0;
+  if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0 || sc.z < 0.0) return fv;
   float d = dot(texture2D(tShadow, sc.xy), vec4(0.99609375, 0.99609375 / 256.0, 0.99609375 / 65536.0, 1.0 / 16777216.0));
-  return step(sc.z - 0.0012, d);
+  return step(sc.z - 0.0012, d) * fv;
 }
 void main(){
   float z = texture2D(tDepthHalf, vUv).r;
@@ -93,7 +103,7 @@ void main(){
     float t1 = maxD * f * (0.35 + 0.65 * f);              // 靠近眼睛的地方采样更密
     float ds = t1 - tPrev;
     vec3 p = uCamPos + rd * (tPrev + ds * j);
-    float sh = uHasShadow > 0.5 ? sunVis(p) : 1.0;
+    float sh = sunVis(p);
     float Ti = exp(-uSigma * ds);
     acc += T * sh * (1.0 - Ti);
     T *= Ti; tPrev = t1;
@@ -377,7 +387,7 @@ export class Post {
       uExposure: { value: 1 }, uGrain: { value: 0.03 }, uRed: { value: 0 }, uFlash: { value: 0 },
     };
     this.expo = { tAdapt: { value: null }, uExposure: this.u.uExposure, uKey: { value: 0.2 }, uMinE: { value: 0.7 }, uMaxE: { value: 1.6 }, uAuto: { value: 1 } };
-    this.tune = { aoRadius: 1.1, aoIntensity: 1.5, aoStrength: 0.9, bloom: 0.07, flare: 0.14, ca: 0.0012, vignette: 0.22, sharpen: 0.28, volSigma: 0.0016, volMaxDist: 110, volGain: 1 };
+    this.tune = { aoRadius: 1.1, aoIntensity: 1.5, aoStrength: 0.9, bloom: 0.07, flare: 0.14, ca: 0.0012, vignette: 0.22, sharpen: 0.28, volSigma: 0.0016, volMaxDist: 150, volGain: 1 };
 
     const M = (name, fs, uniforms, defines) => {
       const m = new THREE.ShaderMaterial({ name: 'post-' + name, vertexShader: VS, fragmentShader: `${TAG} ${name}\n${fs}`, uniforms, defines: defines || {}, depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false });
@@ -386,7 +396,7 @@ export class Post {
     const V2 = () => ({ value: new THREE.Vector2() });
     this.mDepth = M('depth', FS_DEPTH, { tDepth: { value: null }, uNear: { value: 0.1 }, uFar: { value: 5000 } });
     this.mAO = M('ao', FS_AO, { tDepthHalf: { value: this.R.depthHalf.texture }, uTanHalf: V2(), uTexel: V2(), uRadius: { value: 1 }, uIntensity: { value: 1 }, uAspect: { value: 1 } }, { AO_TAPS: 10 });
-    this.mVol = M('vol', FS_VOL, { tDepthHalf: { value: this.R.depthHalf.texture }, tShadow: { value: null }, uShadowMatrix: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() }, uSunRad: { value: new THREE.Vector3() }, uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uTanHalf: V2(), uHasShadow: { value: 0 }, uMaxDist: { value: 110 }, uSigma: { value: 0.002 }, uFrame: { value: 0 } }, { VOL_STEPS: 10 });
+    this.mVol = M('vol', FS_VOL, { tDepthHalf: { value: this.R.depthHalf.texture }, tShadow: { value: null }, uShadowMatrix: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() }, uSunRad: { value: new THREE.Vector3() }, uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uTanHalf: V2(), uHasShadow: { value: 0 }, uMaxDist: { value: 110 }, uSigma: { value: 0.002 }, uFrame: { value: 0 }, uFarOn: { value: 0 }, uFarBias: { value: 0.0004 }, tFarSh: { value: null }, uFarShM: { value: new THREE.Matrix4() } }, { VOL_STEPS: 10 });
     this.mBlurAO = M('blur-ao', FS_BLUR, { tSrc: { value: null }, tDepthHalf: { value: this.R.depthHalf.texture }, uDir: V2() }, { BLUR_TOL: '0.03' });
     this.mBlurVol = M('blur-vol', FS_BLUR, { tSrc: { value: null }, tDepthHalf: { value: this.R.depthHalf.texture }, uDir: V2() }, { BLUR_TOL: '0.6' });
     this.mComp = M('comp', FS_COMP, { tColor: { value: null }, tDepth: { value: null }, tDepthHalf: { value: this.R.depthHalf.texture }, tAO: { value: this.R.aoA.texture }, tVol: { value: this.R.volA.texture }, uHalfRes: V2(), uNear: { value: 0.1 }, uFar: { value: 5000 }, uAoOn: { value: 0 }, uVolOn: { value: 0 }, uAoStrength: { value: 1 }, uFogD: { value: 0 }, ...this.expo });
@@ -489,6 +499,9 @@ export class Post {
         if (sm) v.uShadowMatrix.value.copy(sun.shadow.matrix);
         v.uCamWorld.value.copy(camera.matrixWorld); v.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);
         v.uTanHalf.value.set(tx, ty); v.uMaxDist.value = tu.volMaxDist; v.uSigma.value = tu.volSigma; v.uFrame.value = this.frameN % 64;
+        const fs = env.far;
+        v.uFarOn.value = fs && fs.ready ? env.farK || 0 : 0;
+        if (fs && fs.ready) { v.tFarSh.value = fs.depth; v.uFarShM.value.copy(fs.matrix); }
         const k = sun.intensity * env.vol * tu.volGain;
         v.uSunRad.value.set(sun.color.r * k, sun.color.g * k, sun.color.b * k);
         v.uSunDir.value.copy(sun.position).sub(sun.target.position).normalize();
@@ -560,6 +573,44 @@ export class Post {
       E.uAuto.value = au; E.uExposure.value = ex;
     }
     R.setRenderTarget(null);
+  }
+}
+
+// ---------------------------------------------------------------- 远距离地形阴影
+// 太阳方向再拍一张覆盖方圆一千多米的深度图，只画地形：山脊在山谷里投下长长的影子，日出日落时最明显。
+// 近处树木、石头、建筑的影子还是原来那张精细的阴影图负责，两张相乘。
+export class FarShadow {
+  constructor(size = 1024, half = 800, layer = 1, dist = 1350, near = 50, far = 2650) {
+    this.size = size; this.half = half; this.dist = dist; this.range = far - near; this.ready = false;
+    this.depth = new THREE.DepthTexture(size, size);
+    this.depth.minFilter = this.depth.magFilter = THREE.NearestFilter;
+    this.rt = new THREE.WebGLRenderTarget(size, size, { depthBuffer: true, depthTexture: this.depth, stencilBuffer: false, generateMipmaps: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.cam = new THREE.OrthographicCamera(-half, half, half, -half, near, far);
+    this.cam.layers.set(layer);
+    this.mat = new THREE.MeshBasicMaterial({ colorWrite: false });
+    this.matrix = new THREE.Matrix4();
+    this._bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+    this._m = new THREE.Matrix4(); this._inv = new THREE.Matrix4(); this._v = new THREE.Vector3(); this._o = new THREE.Vector3(); this._up = new THREE.Vector3(0, 1, 0); this._x = new THREE.Vector3(1, 0, 0);
+  }
+  get texel() { return this.half * 2 / this.size; }
+  // lightDir：指向光源的方向；center：以谁为中心（一般是相机）
+  update(renderer, scene, lightDir, center) {
+    const up = Math.abs(lightDir.y) > 0.98 ? this._x : this._up;
+    // 中心按阴影图的像素对齐：人走动时山影的边缘不抖
+    this._m.lookAt(lightDir, this._o, up); this._inv.copy(this._m).invert();
+    const t = this.texel, v = this._v.copy(center).applyMatrix4(this._inv);
+    v.x = Math.round(v.x / t) * t; v.y = Math.round(v.y / t) * t; v.applyMatrix4(this._m);
+    this.cam.up.copy(up);
+    this.cam.position.copy(v).addScaledVector(lightDir, this.dist);
+    this.cam.lookAt(v);
+    this.cam.updateMatrixWorld(true);
+    const prevRT = renderer.getRenderTarget(), prevOv = scene.overrideMaterial, au = renderer.shadowMap.autoUpdate, nu = renderer.shadowMap.needsUpdate;
+    renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false;
+    scene.overrideMaterial = this.mat;
+    try { renderer.setRenderTarget(this.rt); renderer.clear(); renderer.render(scene, this.cam); }
+    finally { scene.overrideMaterial = prevOv; renderer.shadowMap.autoUpdate = au; renderer.shadowMap.needsUpdate = nu; renderer.setRenderTarget(prevRT); }
+    this.matrix.multiplyMatrices(this.cam.projectionMatrix, this.cam.matrixWorldInverse).premultiply(this._bias);
+    this.ready = true;
   }
 }
 

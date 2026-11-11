@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { ROUTE, routeZ, routeDZ, altToY, ROUTE_LENGTH, season } from './data.js';
 import { heightAt, LAKE, nearestWaypoint, STREAM } from './terrain.js';
 import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
-import { surfMat, tex, QUAL } from './materials.js';
+import { surfMat, plainMat, tex, QUAL } from './materials.js';
 import { bevelBox, lathe, tube, merge, paint, xf, crease, rockGeo, bakeGroup } from './geo.js';
 import { humanMats, buildHuman, buildPack, poseHuman } from './human.js';
 
@@ -545,7 +545,7 @@ function temple(size = 1, roofMat, opts = {}) {
     const tx = textTexture([opts.name], { w: 512, h: 160, bg: '#1d2b3c', fg: '#e9c46a', border: '#b8913a', sizes: [92] });
     const pw = w * 0.3, ph = w * 0.095;
     g.add(box(pw + 0.1, ph + 0.1, 0.06, m.beamGold, 0, b + h * 0.86, fz + 0.15, 0, 0.015));
-    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), new THREE.MeshStandardMaterial({ map: tx, roughness: 0.55 }));
+    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), plainMat({ map: tx, roughness: 0.55 }));
     plaque.position.set(0, b + h * 0.86, fz + 0.185); g.add(plaque);
   }
   const r = curvedRoof(w, d, 1.25 * size, roofMat || m.roof, 0.75 * size, 0.55 * size);
@@ -667,7 +667,7 @@ function signPost(name, alt) {
   g.add(box(0.15, 2.7, 0.13, m.woodDark, 0, 1.35, -0.03, 0, 0.02));
   g.add(box(0.5, 0.26, 0.5, m.rock, 0, 0.08, -0.02, 0.4, 0.08));
   const tx = textTexture([name, alt ? `海拔 ${alt} m` : ''].filter(Boolean));
-  const boardMat = new THREE.MeshStandardMaterial({ map: tx, roughness: 0.85 });
+  const boardMat = plainMat({ map: tx, roughness: 0.85 });
   g.add(box(2.04, 1.04, 0.07, m.wood, 0, 2.25, 0.06, 0, 0.02));
   for (const s of [1, -1]) { const f = new THREE.Mesh(new THREE.PlaneGeometry(1.92, 0.92), boardMat); f.position.set(0, 2.25, 0.06 + s * 0.037); if (s < 0) f.rotation.y = Math.PI; g.add(f); }
   g.add(at(box(2.3, 0.05, 0.34, m.woodDark, 0, 0, 0, 0, 0.012), 0, 2.84, 0.06, 0.12, 0, 0));
@@ -688,7 +688,7 @@ function stele(lines) {
   body.translate(0, 0.32, -T / 2);
   g.add(sh(new THREE.Mesh(body, m.stele)));
   const tx = textTexture(lines, { w: 256, h: 512, bg: '#6f6c66', fg: '#ece6d4', border: '#4a4844', sizes: [70, 34], carve: true });
-  const face = new THREE.MeshStandardMaterial({ map: tx, roughness: 0.9 });
+  const face = plainMat({ map: tx, roughness: 0.9 });
   for (const s of [1, -1]) { const f = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.84, Hh * 0.74), face); f.position.set(0, 0.32 + Hh * 0.43, s * (T / 2 + 0.034)); if (s < 0) f.rotation.y = Math.PI; g.add(f); }
   g.add(box(1.5, 0.22, 0.7, m.stoneDark, 0, 0.11, 0, 0, 0.04));
   g.add(box(1.3, 0.14, 0.52, m.slab, 0, 0.28, 0, 0, 0.03));
@@ -835,6 +835,7 @@ export class World {
     this.rng = rng;
     mats();
     this.build();
+    this.group.traverse(o => { if (o.isMesh && o.castShadow) o.layers.enable(2); });      // 第 2 层：会被画进中距离阴影图
   }
 
   // 摆一个物件到地面上。静态的建筑会把同材质的零件合并成一个网格，省绘制调用
@@ -903,7 +904,7 @@ export class World {
             gate.add(box(10.4, 0.3, 0.8, m.woodDark, 0, 6.2, 0, 0, 0.04));
             gate.add(box(4.8, 1.3, 0.3, m.woodDark, 0, 4.9, 0, 0, 0.03));
             const tex = textTexture(['鹦鸽镇'], { w: 512, h: 128, bg: '#1a2a4a', fg: '#f0d48a', border: '#c9a24a', sizes: [86] });
-            const plate = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), new THREE.MeshStandardMaterial({ map: tex, emissive: 0x222222, emissiveMap: tex }));
+            const plate = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), plainMat({ map: tex, emissive: 0x222222, emissiveMap: tex }));
             plate.position.set(0, 4.9, 0.16); gate.add(plate);
             const plate2 = plate.clone(); plate2.rotation.y = Math.PI; plate2.position.z = -0.16; gate.add(plate2);
             const r2 = curvedRoof(10, 1.4, 0.9, m.roof, 0.5, 0.45); r2.position.y = 6.4; gate.add(r2);

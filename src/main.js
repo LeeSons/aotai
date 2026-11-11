@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { ROUTE, ROUTE_LENGTH, ITEMS, ITEM_USES, BACKPACKS, DIFFICULTY, GAME_MIN_PER_SEC, SEC_PER_GAME_HOUR, SHOP_STOCK, SEASONS, WORLD, routeZ, yToAlt, altToY, segIndexAt, moneyForWins, WIN_BONUS } from './data.js';
 import { mulberry32, clamp, lerp, smoothstep, makeNoise } from './noise.js';
 import { makeWeatherUniforms, bakeTextures, QUAL } from './materials.js';
-import { Post, installSoftShadows } from './post.js';
+import { Post, installSoftShadows, FarShadow } from './post.js';
 import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, openAt, STREAM } from './terrain.js';
 import { Sky, CloudSea, World, Glory, WATER_U, initWorldMats, hikerModel, campfireModel } from './world.js';
 import { FX } from './fx.js';
@@ -108,6 +108,18 @@ class Game {
     this.post = new Post(R, this.gfxKey, GFX[this.gfxKey].msaa);
     this.post.setSize(sz.x, sz.y);
     this.postU = this.post.u;
+    // 远距离地形阴影：山体投下的影子（方圆 800 米，只画地形，几帧更新一次）
+    this.farSh = new FarShadow(QUAL.lite ? 512 : 1024, 800, 1);
+    this.wxU.tFarSh.value = this.farSh.depth; this.wxU.uFarShM.value = this.farSh.matrix;
+    this.wxU.uFarSh.value.set(1 / this.farSh.size, 0.6 / 2600, 0, this.farSh.texel * 1.6);
+    this.cloudDrift = new THREE.Vector2(); this.frameNo = 0;
+    // 中距离阴影：近处那张精细阴影图只管 64 米内，再往外 190 米内的树、石头、建筑由这张图投影（位置或太阳变了才重画）
+    this.midSh = QUAL.lite ? null : new FarShadow(2048, 190, 2, 420, 20, 900);
+    if (this.midSh) {
+      this.wxU.tMidSh.value = this.midSh.depth; this.wxU.uMidShM.value = this.midSh.matrix;
+      this.wxU.uMidSh.value.set(1 / this.midSh.size, 0.3 / this.midSh.range, 0, this.midSh.texel * 1.7);
+      this.midState = { c: new THREE.Vector3(1e9, 0, 0), d: new THREE.Vector3(), t: 0 };
+    }
 
     // 光照
     initTerrainAssets(this.wxU);
@@ -770,6 +782,17 @@ class Game {
       this.post.tune.volSigma = 0.0011 + Math.min(this.scene.fog.density * 0.22, 0.006) + (day ? (1 - smoothstep(0.05, 0.45, sy)) * 0.0012 : 0);
       // 自动曝光的范围：白天眼睛能适应明暗，夜里不许把黑夜提亮（黑就是黑，得开头灯）
       E.autoRange = [lerp(0.92, 0.68, dayK), lerp(1.12, 1.55, dayK)];
+      // 山影：强度跟近处的阴影一起在地平线附近淡出；光太弱（阴天深夜）就不必算了
+      const farK = li > 0.015 ? this.sun.shadow.intensity : 0;
+      WU.uFarSh.value.z = this.farSh.ready ? farK : 0;
+      E.far = this.farSh; E.farK = farK;
+      if (this.midSh) WU.uMidSh.value.z = this.midSh.ready ? farK : 0;
+      // 云影：云量适中时最明显（晴天零星几块，多云时大片阴影里漏下几块阳光），阴天整体已经暗了就不再叠；飞到云上面没有
+      const csK = (day ? 0.62 : 0.35) * smoothstep(0.04, 0.14, cloud) * (1 - smoothstep(0.55, 1.0, cloud)) * (1 - fogK);
+      const dtc = Math.min(this.postEnv.dt || 0.016, 0.1), wsp = (5 + (this.windLocal || 4) * 1.4) * 0.00034;
+      const wdr = this.windDirLocal || this.weather.windDir;
+      this.cloudDrift.x = (this.cloudDrift.x - wdr.x * wsp * dtc) % 1; this.cloudDrift.y = (this.cloudDrift.y - wdr.y * wsp * dtc) % 1;
+      WU.uCloudSh.value.set(0.655 - cloud * 0.42, csK, this.cloudDrift.x, this.cloudDrift.y);
     }
     this.hemi.color.copy(z.clone().lerp(new THREE.Color(1, 1, 1), 0.3));
     this.hemi.groundColor.setRGB(0.22, 0.18, 0.12).multiplyScalar(lerp(0.1, 1, dayK));
@@ -2099,6 +2122,24 @@ class Game {
 
   render() {
     this.sky.mesh.position.copy(this.camera.position);
+    // 远距离地形阴影图：隔几帧重画一次（太阳走得慢，山影不需要每帧更新）
+    this.frameNo++;
+    if (this.postEnv && this.postEnv.farK > 0 && (this.frameNo % (QUAL.lite ? 8 : 3) === 0 || !this.farSh.ready)) {
+      try { this.farSh.update(this.renderer, this.scene, this.wxU.uSunDir.value, this.camera.position); }
+      catch (e) { console.error('[gfx] 远距离阴影图出错，已关闭', e); this.postEnv.farK = 0; this.wxU.uFarSh.value.z = 0; this.farSh.update = () => {}; }
+    }
+    // 中距离阴影图：走出十来米、太阳转了一度多、或者隔两秒（新的树加载进来了）才重画
+    const MS = this.midSh;
+    if (MS && this.postEnv && this.postEnv.farK > 0) {
+      const st = this.midState, ld = this.wxU.uSunDir.value, P = this.state === 'play' ? this.player.pos : this.camera.position;
+      st.t += this.postEnv.dt || 0.016;
+      this.wxU.uMidC.value.set(P.x, P.y, P.z, SHADOW_HALF * 0.9);      // “从多远开始接手”跟着人走（近处那张阴影图也是跟着人走的）
+      if (!MS.ready || st.t > 2 || (st.t > 0.25 && (st.c.distanceToSquared(P) > 144 || st.d.dot(ld) < 0.99978))) {
+        st.t = 0; st.c.copy(P); st.d.copy(ld);
+        try { this.terrain.withLowLod(() => MS.update(this.renderer, this.scene, ld, P)); }
+        catch (e) { console.error('[gfx] 中距离阴影图出错，已关闭', e); this.midSh = null; this.wxU.uMidSh.value.z = 0; }
+      }
+    }
     this.post.render(this.scene, this.camera, this.postEnv || {});
   }
 }

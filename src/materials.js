@@ -20,6 +20,12 @@ export function makeWeatherUniforms() {
     uFogSun: { value: new THREE.Color(0, 0, 0) },       // 朝太阳方向看时雾里多出来的那层暖光
     uHaze: { value: new THREE.Vector4(0, 0.012, 0, 0) }, // 谷底的霾：x 霾顶高度 y 衰减 z 浓度
     tNoise: { value: null },
+    // 远距离地形阴影（山体投下的影子）：深度图、世界坐标 → 阴影图坐标的矩阵、x 像素大小 y 深度偏移 z 强度 w 沿法线外推的距离（米）
+    tFarSh: { value: null }, uFarShM: { value: new THREE.Matrix4() }, uFarSh: { value: new THREE.Vector4(1 / 1024, 0.0002, 0, 2.4) },
+    // 云影：x 云量阈值 y 强度 zw 随风漂移
+    uCloudSh: { value: new THREE.Vector4(0.6, 0, 0, 0) },
+    // 中距离阴影（近处那张精细阴影图够不着的树、石头、建筑的影子）：用法同上；uMidC = 中心 xyz + 从多远开始接手
+    tMidSh: { value: null }, uMidShM: { value: new THREE.Matrix4() }, uMidSh: { value: new THREE.Vector4(1 / 2048, 0.0003, 0, 0.3) }, uMidC: { value: new THREE.Vector4(0, 0, 0, 58) },
   };
 }
 
@@ -481,7 +487,51 @@ varying vec2 vAtUv;
 uniform sampler2D tRA, tRB, tGA, tGB;
 varying vec3 vAtT;
 #endif
-vec3 atN = vec3(0.0, 0.0, 1.0); float atAO = 1.0; float atRough = 1.0; float atSnow = 0.0; float atPud = 0.0;
+uniform sampler2D tFarSh; uniform mat4 uFarShM; uniform vec4 uFarSh; uniform vec4 uCloudSh;
+uniform sampler2D tMidSh; uniform mat4 uMidShM; uniform vec4 uMidSh; uniform vec4 uMidC;
+vec3 atN = vec3(0.0, 0.0, 1.0); float atAO = 1.0; float atRough = 1.0; float atSnow = 0.0; float atPud = 0.0; float atSun = 1.0;
+// 这一点照不照得到太阳：被远处的山挡住了没有（远距离地形阴影图）、头顶有没有云飘过（云影）
+float atSunVis(vec3 wp, vec3 n){
+  float lit = 1.0;
+  if (uFarSh.z > 0.003) {
+    vec4 sc = uFarShM * vec4(wp + n * uFarSh.w, 1.0);
+    if (sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0) {
+      float z = sc.z - uFarSh.y;
+      #ifdef AT_LITE
+        float s = step(z, texture2D(tFarSh, sc.xy).r);
+      #else
+        vec2 st = sc.xy / uFarSh.x - 0.5; vec2 f = fract(st); vec2 b = (floor(st) + 0.5) * uFarSh.x;
+        float s00 = step(z, texture2D(tFarSh, b).r), s10 = step(z, texture2D(tFarSh, b + vec2(uFarSh.x, 0.0)).r);
+        float s01 = step(z, texture2D(tFarSh, b + vec2(0.0, uFarSh.x)).r), s11 = step(z, texture2D(tFarSh, b + vec2(uFarSh.x)).r);
+        float s = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+      #endif
+      vec2 e = min(sc.xy, 1.0 - sc.xy);
+      lit = mix(1.0, s, uFarSh.z * smoothstep(0.0, 0.06, min(e.x, e.y)));
+    }
+  }
+  #ifndef AT_LITE
+  if (uMidSh.z > 0.003) {
+    // 近处（精细阴影图管得到的范围）不用它，往外渐渐接手
+    float dk = smoothstep(uMidC.w * 0.78, uMidC.w, distance(wp.xz, uMidC.xz));
+    vec4 sc = uMidShM * vec4(wp + n * uMidSh.w, 1.0);
+    if (dk > 0.003 && sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0) {
+      float z = sc.z - uMidSh.y;
+      vec2 st = sc.xy / uMidSh.x - 0.5; vec2 f = fract(st); vec2 b = (floor(st) + 0.5) * uMidSh.x;
+      float s00 = step(z, texture2D(tMidSh, b).r), s10 = step(z, texture2D(tMidSh, b + vec2(uMidSh.x, 0.0)).r);
+      float s01 = step(z, texture2D(tMidSh, b + vec2(0.0, uMidSh.x)).r), s11 = step(z, texture2D(tMidSh, b + vec2(uMidSh.x)).r);
+      float s = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+      vec2 e = min(sc.xy, 1.0 - sc.xy);
+      lit *= mix(1.0, s, uMidSh.z * dk * smoothstep(0.0, 0.1, min(e.x, e.y)));
+    }
+  }
+  #endif
+  if (uCloudSh.y > 0.003) {
+    vec2 q = (wp.xz + uSunDir.xz * (900.0 / max(uSunDir.y, 0.25))) * 0.00034 + uCloudSh.zw;
+    float dens = texture2D(tNoise, q).r * 0.62 + texture2D(tNoise, q * 2.9 + 0.71).b * 0.27 + 0.055;
+    lit *= 1.0 - uCloudSh.y * smoothstep(uCloudSh.x, uCloudSh.x + 0.14, dens);
+  }
+  return lit;
+}
 float atH13(vec3 p){ p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
 // 雨点打在水洼里的一圈圈涟漪：返回水面法线在 xz 上的偏移
 vec2 atRipple(vec2 p, float t){
@@ -629,6 +679,7 @@ const SURF_GENERIC = `
     diffuseColor.rgb *= 1.0 - uWet * 0.3 * uAt2.y;
   #endif
   atN = normalize((viewMatrix * vec4(pN, 0.0)).xyz);
+  atSun = atSunVis(vAtW, gWN);
 }
 `;
 // 地形：草皮、碎石、岩壁三层按坡度 / 地段 / 贴图高度混合，再加水洼
@@ -732,6 +783,7 @@ const SURF_TERRAIN = `
     atRough = mix(mix(atRough, 0.62, sn), 0.04, pud); atAO = mix(atAO, 1.0, max(sn * 0.7, pud));
   }
   atN = normalize((viewMatrix * vec4(pN, 0.0)).xyz);
+  atSun = atSunVis(wp, gWN);
 }
 `;
 const ROUGH_FRAG = `
@@ -790,6 +842,11 @@ function swayCode(o) {
   }`;
 }
 
+// 平行光（太阳 / 月亮）乘上“照不照得到”；营火、头灯这些点光源不受山影和云影影响
+const LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace('getDirectionalLightInfo( directionalLight, directLight );', 'getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= atSun;');
+if (LIGHTS_BEGIN === THREE.ShaderChunk.lights_fragment_begin) console.warn('[gfx] 光照着色器结构与预期不符，山影和云影不会生效');
+// 不贴图的普通材质，但同样吃大气雾、山影和云影（皮肤、眼睛、扣件、字牌、鸟……）
+export function plainMat(o = {}) { return surfMat(null, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, snow: 0, wet: 0, ...o }); }
 let matId = 0;
 /**
  * 做一个带细节贴图的标准材质。
@@ -827,7 +884,7 @@ export function surfMat(U, o = {}) {
     o.noflip ? '#define AT_NOFLIP' : '',
   ].filter(Boolean).join('\n') + '\n';
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, U, uni);
+    Object.assign(shader.uniforms, U || SHARED.U, uni);      // 有的材质在模块加载时就建了，那时共用参数还没准备好：编译时再取
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${defs}${VERT_PARS}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -859,6 +916,7 @@ export function surfMat(U, o = {}) {
       .replace('#include <fog_pars_fragment>', `#include <fog_pars_fragment>\n${FOG_FN}`)
       .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${TRANS_FN}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${o.terrain ? SURF_TERRAIN : SURF_GENERIC}`)
+      .replace('#include <lights_fragment_begin>', LIGHTS_BEGIN)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${ROUGH_FRAG}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n normal = atN;`)
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>\n reflectedLight.indirectDiffuse *= atAO; reflectedLight.indirectSpecular *= atAO * atAO;`)

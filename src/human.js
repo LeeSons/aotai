@@ -3,7 +3,7 @@
 // 每一节的外形用放样曲面做出来——躯干有肩有腰，四肢有粗细变化，关节处是球形端头（弯起来不露缝），
 // 头有下颌、鼻子、眼睛、耳朵；冲锋衣有立领、拉链、口袋；背包有顶包、侧袋、压缩带、背负系统；登山鞋有鞋帮、鞋带、大底。
 import * as THREE from 'three';
-import { surfMat } from './materials.js';
+import { surfMat, plainMat } from './materials.js';
 import { loft, loftPoint, loftStrap, ribbon, bevelBox, lathe, paint, merge, xf, crease, displace } from './geo.js';
 import { mulberry32 } from './noise.js';
 
@@ -23,11 +23,11 @@ export function humanMats(jacket = 0x8a8f96, o = {}) {
     jacket: cloth(jacket, 0.82),
     jacketDark: cloth(0x24272b, 0.9),
     pants: cloth(o.pants || 0x3a3f46, 0.98),
-    skin: new THREE.MeshStandardMaterial({ color: o.skin || 0xc9977c, roughness: 0.62, vertexColors: true }),
+    skin: plainMat({ color: o.skin || 0xc9977c, roughness: 0.62, vertexColors: true }),
     hair: cloth(0x1b1612, 1.0, { scale: 0.05, bump: 1.4 }),
-    eye: new THREE.MeshStandardMaterial({ color: 0x1a120c, roughness: 0.25 }),
-    eyeWhite: new THREE.MeshStandardMaterial({ color: 0xe8e4de, roughness: 0.35 }),
-    lip: new THREE.MeshStandardMaterial({ color: 0x9a5a50, roughness: 0.55 }),
+    eye: plainMat({ color: 0x1a120c, roughness: 0.25 }),
+    eyeWhite: plainMat({ color: 0xe8e4de, roughness: 0.35 }),
+    lip: plainMat({ color: 0x9a5a50, roughness: 0.55 }),
     glove: cloth(0x23262a, 0.95),
     boot: surfMat(null, { kind: 'wood', mapping: 'local', scale: 0.3, bump: 0.6, tex: 0.4, color: 0x5b3b22, roughness: 0.75, snow: 0.5 }),
     sole: cloth(0x1a1a1a, 1.05),
@@ -35,12 +35,12 @@ export function humanMats(jacket = 0x8a8f96, o = {}) {
     packAccent: cloth(o.packAccent || 0x27382e, 0.9, { scale: 0.18, bump: 1.2 }),
     strap: cloth(0x1c1f23, 1.0, { scale: 0.06 }),
     pad: cloth(0xd27a26, 0.8, { scale: 0.3, bump: 0.5 }),
-    bottle: new THREE.MeshStandardMaterial({ color: 0x2c6fb0, roughness: 0.3, metalness: 0.25 }),
+    bottle: plainMat({ color: 0x2c6fb0, roughness: 0.3, metalness: 0.25 }),
     hat: cloth(o.hat || 0x9b2424, 1.05, { scale: 0.07, bump: 1.6 }),
     pole: surfMat(null, { kind: 'metal', mapping: 'local', scale: 0.4, bump: 0.5, tex: 0.4, color: 0xb8bec6, roughness: 0.6, metalness: 0.85, snow: 0 }),
     grip: cloth(0x111111, 0.8, { scale: 0.04 }),
-    buckle: new THREE.MeshStandardMaterial({ color: 0x8a8d90, roughness: 0.4, metalness: 0.7 }),
-    lamp: new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: 0xfff2c0, emissiveIntensity: 0 }),
+    buckle: plainMat({ color: 0x8a8d90, roughness: 0.4, metalness: 0.7 }),
+    lamp: plainMat({ color: 0x1a1a1a, emissive: 0xfff2c0, emissiveIntensity: 0 }),
   };
   for (const k of ['eye', 'eyeWhite', 'lip', 'buckle', 'lamp']) M[k].userData.noShadow = true;      // 太小的零件不投影
   return M;
