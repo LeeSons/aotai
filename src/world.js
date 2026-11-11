@@ -5,6 +5,7 @@ import { heightAt, LAKE, nearestWaypoint, STREAM } from './terrain.js';
 import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
 import { surfMat, tex, QUAL } from './materials.js';
 import { bevelBox, lathe, tube, merge, paint, xf, crease, rockGeo, bakeGroup } from './geo.js';
+import { humanMats, buildHuman, buildPack, poseHuman } from './human.js';
 
 // ---------------- 天空 ----------------
 const skyVS = `
@@ -797,40 +798,25 @@ export function campfireModel() {
   return g;
 }
 
-// 驴友 / 护林员：和主角同一套胶囊体人形，坐着或站着
+// 驴友 / 护林员：和主角同一套人形。驴友盘腿坐在地上、背包立在身边；护林员站着，戴宽檐帽
 export function hikerModel(color, ranger) {
-  const S = (o) => surfMat(WU, { kind: 'fabric', mapping: 'local', scale: 0.16, bump: 0.9, tex: 0.6, roughness: 0.95, snow: 0.3, ...o });
-  const jacket = S({ color }), dark = S({ color: 0x2c3138 }), skin = new THREE.MeshStandardMaterial({ color: 0xc89878, roughness: 0.7 });
-  const packM = S({ color: 0x3a5a44 }), hatM = S({ color: ranger ? 0x2a3a2a : 0x8a2a22 }), boot = S({ color: 0x4a3222, roughness: 0.8 });
   const g = new THREE.Group();
-  const cap = (r, l) => new THREE.CapsuleGeometry(r, l, 5, 12);
-  const add = (geo, mat, x, y, z, rx = 0, rz = 0) => { const mm = new THREE.Mesh(geo, mat); mm.position.set(x, y, z); mm.rotation.set(rx, 0, rz); mm.castShadow = true; mm.receiveShadow = true; g.add(mm); return mm; };
   if (ranger) {
-    add(cap(0.19, 0.34), jacket, 0, 1.27, 0).scale.set(1, 1, 0.72);
-    add(new THREE.SphereGeometry(0.115, 14, 10), skin, 0, 1.76, 0.01);
-    add(new THREE.CylinderGeometry(0.2, 0.2, 0.025, 16), hatM, 0, 1.85, 0.01); add(new THREE.CylinderGeometry(0.11, 0.125, 0.11, 14), hatM, 0, 1.9, 0);
-    for (const s of [-1, 1]) {
-      add(cap(0.085, 0.72), dark, s * 0.11, 0.5, 0);
-      add(bevelBox(0.13, 0.1, 0.28, 0.03), boot, s * 0.11, 0.05, 0.04);
-      add(cap(0.06, 0.5), jacket, s * 0.26, 1.24, 0, 0, s * 0.08);
-      add(new THREE.SphereGeometry(0.05, 8, 6), skin, s * 0.28, 0.92, 0);
-    }
-    add(bevelBox(0.3, 0.05, 0.02, 0.01), dark, 0, 1.02, 0.14);
+    const M = humanMats(color, { pants: 0x2c3a30, hat: 0x2a3a2a });
+    const H = buildHuman(M, { pack: false, poles: false, hat: 'brim', lamp: false });
+    poseHuman(H, { pelvisY: 0.96, spine: 0.03, neck: -0.02, shL: [0.05, 0, -0.1], shR: [0.05, 0, 0.1], elL: -0.25, elR: -0.25, hipL: [-0.02, 0, -0.05], hipR: [0.02, 0, 0.05], knL: 0.05, knR: 0.05 });
+    g.add(H.root);
   } else {
-    // 盘腿坐在地上，背包立在身边
-    add(cap(0.18, 0.3), jacket, 0, 0.62, 0, 0.12).scale.set(1, 1, 0.75);
-    add(new THREE.SphereGeometry(0.115, 14, 10), skin, 0, 1.06, 0.06);
-    add(new THREE.SphereGeometry(0.122, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), hatM, 0, 1.08, 0.05);
-    for (const s of [-1, 1]) {
-      add(cap(0.085, 0.38), dark, s * 0.17, 0.18, 0.2, Math.PI / 2 - 0.15, s * 0.5);
-      add(cap(0.075, 0.34), dark, s * 0.12, 0.14, 0.42, Math.PI / 2, -s * 1.1);
-      add(bevelBox(0.12, 0.1, 0.26, 0.03), boot, -s * 0.12, 0.08, 0.5, 0, s * 0.3);
-      add(cap(0.058, 0.42), jacket, s * 0.25, 0.56, 0.12, 0.7, s * 0.15);
-      add(new THREE.SphereGeometry(0.048, 8, 6), skin, s * 0.2, 0.36, 0.3);
-    }
-    const pk = add(cap(0.19, 0.36), packM, 0.62, 0.36, -0.28, -0.12); pk.scale.set(1, 1, 0.7);
-    add(new THREE.SphereGeometry(0.17, 12, 8), packM, 0.62, 0.66, -0.3).scale.set(1.05, 0.4, 0.75);
-    add(new THREE.CylinderGeometry(0.07, 0.07, 0.44, 12), S({ color: 0xd27a26 }), 0.62, 0.08, -0.16, 0, Math.PI / 2);
+    const M = humanMats(color, { hat: [0x8a2a22, 0x2a4a6a, 0x3a3a3a][((color >> 4) & 0xff) % 3], pack: 0x3a5a44 });
+    const H = buildHuman(M, { pack: false, poles: false, lamp: false });
+    // 坐姿：和主角坐下休息是同一个姿势
+    poseHuman(H, { pelvisY: 0.2, spine: 0.3, neck: 0.12, shL: [-0.72, 0, -0.12], shR: [-0.6, 0, 0.12], elL: -1.05, elR: -0.9, hipL: [-1.45, 0, -0.18], hipR: [-1.4, 0, 0.16], knL: 1.75, knR: 1.6, anL: -0.2, anR: -0.2 });
+    g.add(H.root);
+    // 卸下来的背包立在身边
+    const pk = new THREE.Group(); pk.position.set(0.62, 0.34, -0.25); pk.rotation.set(-0.16, 0.5, 0.05);
+    const P = buildPack(M, pk);
+    P.packBody.position.set(0, 0, 0); P.packLid.position.set(0, 0.31, -0.01); P.packPocket.position.set(0, -0.04, -0.16); P.bottle.position.set(0.165, -0.14, 0); P.padRoll.position.set(0, -0.36, -0.02);
+    g.add(pk);
   }
   return g;
 }

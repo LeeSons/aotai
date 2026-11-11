@@ -189,7 +189,7 @@
 // 版本号加载：GitHub Pages 让浏览器把脚本缓存 10 分钟，更新后可能还在跑旧代码（甚至新旧混着）。
 // 这里每次都不走缓存读一下 version.txt，再给所有游戏脚本加上 ?v=版本号——每次更新刷新一下就是最新版。
 (function () {
-  var MODS = ['audio', 'data', 'fauna', 'fx', 'geo', 'hazards', 'main', 'materials', 'noise', 'player', 'post', 'survival', 'terrain', 'touch', 'ui', 'weather', 'world'];
+  var MODS = ['audio', 'data', 'fauna', 'fx', 'geo', 'hazards', 'human', 'main', 'materials', 'noise', 'player', 'post', 'survival', 'terrain', 'touch', 'ui', 'weather', 'world'];
   function boot(v) {
     var imports = { three: './vendor/three.module.js' };
     MODS.forEach(function (m) { imports['./src/' + m + '.js'] = './src/' + m + '.js?v=' + v; });

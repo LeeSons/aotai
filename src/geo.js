@@ -185,6 +185,74 @@ export function tube(points, radius = 0.03, radial = 6, segPer = 4, closedEnds =
   return merge([g, ...caps]);
 }
 
+// 放样：沿 y 轴把一圈圈截面连成光滑的曲面（躯干、四肢、头、背包都用它）。
+// secs 自下而上：[y, rx, rzF = rx, rzB = rzF, cx = 0, cz = 0]——rx 是半宽，rzF / rzB 是往前（+z）/ 往后的半厚。
+// sq：截面的方正程度（0 椭圆 … 1 接近圆角矩形）；ripple / rippleN：一圈上的棱纹（毛线帽的罗纹）
+export function loftAt(secs, y) {
+  let i = 0; while (i < secs.length - 2 && y > secs[i + 1][0]) i++;
+  const a = secs[i], b = secs[i + 1], t = Math.max(0, Math.min(1, (y - a[0]) / (b[0] - a[0] || 1)));
+  const g = (s, k, d) => (s[k] === undefined ? d : s[k]);
+  const L = (k, da, db) => da + (db - da) * t;
+  const rxa = a[1], rxb = b[1], fa = g(a, 2, rxa), fb = g(b, 2, rxb);
+  return [L(0, rxa, rxb), L(0, fa, fb), L(0, g(a, 3, fa), g(b, 3, fb)), L(0, g(a, 4, 0), g(b, 4, 0)), L(0, g(a, 5, 0), g(b, 5, 0))];
+}
+// 截面上角度 a 处的点（a = π/2 是正前方 +z，a = 0 是 +x）
+export function loftPoint(secs, y, a, sq = 0, off = 0) {
+  const [rx, rf, rb, cx, cz] = loftAt(secs, y);
+  const n = 2 + sq * 4, cs = Math.cos(a), sn = Math.sin(a);
+  const k = Math.pow(Math.pow(Math.abs(cs), n) + Math.pow(Math.abs(sn), n), -1 / n);
+  const rz = sn >= 0 ? rf : rb;
+  return [cx + cs * k * (rx + off), y, cz + sn * k * (rz + off)];
+}
+export function loft(secs, { seg = 14, sq = 0, ripple = 0, rippleN = 0, capB = true, capT = true } = {}) {
+  const n = 2 + sq * 4, N = secs.length;
+  const pos = [], idx = [];
+  for (let i = 0; i < N; i++) {
+    const s = secs[i], y = s[0], rx = s[1], rf = s[2] === undefined ? rx : s[2], rb = s[3] === undefined ? rf : s[3], cx = s[4] || 0, cz = s[5] || 0;
+    for (let j = 0; j <= seg; j++) {
+      const a = j / seg * Math.PI * 2, cs = Math.cos(a), sn = Math.sin(a);
+      const k = Math.pow(Math.pow(Math.abs(cs), n) + Math.pow(Math.abs(sn), n), -1 / n) * (1 + ripple * Math.cos(rippleN * a));
+      pos.push(cx + cs * k * rx, y, cz + sn * k * (sn >= 0 ? rf : rb));
+    }
+  }
+  for (let i = 0; i < N - 1; i++) for (let j = 0; j < seg; j++) {
+    const a = i * (seg + 1) + j, b = a + 1, c = a + seg + 1, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  if (capB) { const c = pos.length / 3; pos.push(secs[0][4] || 0, secs[0][0], secs[0][5] || 0); for (let j = 0; j < seg; j++) idx.push(c, j, j + 1); }
+  if (capT) { const c = pos.length / 3, o = (N - 1) * (seg + 1); pos.push(secs[N - 1][4] || 0, secs[N - 1][0], secs[N - 1][5] || 0); for (let j = 0; j < seg; j++) idx.push(c, o + j + 1, o + j); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  // 接缝两列的法线对齐
+  const nor = g.attributes.normal;
+  for (let i = 0; i < N; i++) { const a = i * (seg + 1), b = a + seg; const x = nor.getX(a) + nor.getX(b), y = nor.getY(a) + nor.getY(b), z = nor.getZ(a) + nor.getZ(b), l = Math.hypot(x, y, z) || 1; nor.setXYZ(a, x / l, y / l, z / l); nor.setXYZ(b, x / l, y / l, z / l); }
+  return g;
+}
+// 贴着放样曲面走的一条带子（背带、拉链、腰带）。pts = [[角度, y], ...]；w 宽，t 厚
+export function loftStrap(secs, pts, w, t = 0.006, sq = 0) {
+  const P = pts.map(([a, y]) => new THREE.Vector3(...loftPoint(secs, y, a, sq, t * 0.5)));
+  return ribbon(P, P.map((p, i) => { const q = loftPoint(secs, pts[i][1], pts[i][0], sq, 0.05); return new THREE.Vector3(q[0] - p.x, 0, q[2] - p.z).normalize(); }), w, t);
+}
+// 一条有厚度的带子：沿 pts 走，nrm 是每个点处带子朝外的方向
+export function ribbon(pts, nrm, w, t = 0.006) {
+  const pos = [], idx = [];
+  const tan = new THREE.Vector3(), side = new THREE.Vector3();
+  for (let i = 0; i < pts.length; i++) {
+    tan.subVectors(pts[Math.min(i + 1, pts.length - 1)], pts[Math.max(i - 1, 0)]).normalize();
+    side.crossVectors(tan, nrm[i]).normalize();
+    const p = pts[i], n = nrm[i];
+    for (const [sw, st] of [[-1, 1], [1, 1], [1, -1], [-1, -1]]) pos.push(p.x + side.x * w * 0.5 * sw + n.x * t * 0.5 * st, p.y + side.y * w * 0.5 * sw + n.y * t * 0.5 * st, p.z + side.z * w * 0.5 * sw + n.z * t * 0.5 * st);
+    if (i) { const a = (i - 1) * 4, b = i * 4; for (let k = 0; k < 4; k++) { const k2 = (k + 1) % 4; idx.push(a + k, a + k2, b + k, a + k2, b + k2, b + k); } }
+  }
+  const e = (pts.length - 1) * 4; idx.push(0, 2, 1, 0, 3, 2, e, e + 1, e + 2, e, e + 2, e + 3);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  const ng = g.toNonIndexed(); ng.computeVertexNormals();
+  return ng;
+}
+
 // 一块石头：细分的二十面体 → 分形起伏 → 随机切几刀（花岗岩的节理面）→ 压扁底部 → 折痕法线
 export function rockGeo(seed, detail = 2, { cuts = 12, rough = 0.22, squash = 1 } = {}) {
   const rnd = mulberry32(seed);

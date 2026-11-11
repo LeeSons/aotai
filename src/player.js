@@ -1,7 +1,7 @@
 // ===================== 主角：带关节的人物模型 / 多种姿态动作 / 移动物理 / 相机 =====================
 import * as THREE from 'three';
 import { groundAt, heightAt, treeCollide } from './terrain.js';
-import { surfMat } from './materials.js';
+import { humanMats, buildHuman } from './human.js';
 import { clamp, lerp } from './noise.js';
 import { altToY } from './data.js';
 
@@ -26,12 +26,6 @@ export const FLY_CEIL_ALT = 10000;
 const FLY_HOLD = 0.25, FLY_CEIL_Y = altToY(FLY_CEIL_ALT);
 const PITCH_WALK = [-1.25, 0.95], PITCH_FLY = [-1.5, 1.5];   // 飞行时可以几乎垂直地仰视 / 俯视
 export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', prone: '匍匐', sit: '坐下休息', ko: '倒地', slide: '滑坠', warm: '跳动取暖', coma: '昏迷', fly: '踏空飞行' };
-
-function mk(geo, mat, parent, x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
-}
-function joint(parent, x = 0, y = 0, z = 0) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
-const cap = (r, len) => new THREE.CapsuleGeometry(r, len, 5, 12);
 
 export class Player {
   constructor(scene) {
@@ -88,106 +82,13 @@ export class Player {
 
   // ---------------- 模型 ----------------
   buildModel() {
-    // 衣物：带平纹织物细节的材质（贴图跟着身体走）；皮肤、眼睛、头灯用普通材质
-    const cloth = (color, roughness = 0.9, extra = {}) => surfMat(null, { kind: 'fabric', mapping: 'local', scale: 0.14, bump: 0.9, tex: 0.6, color, roughness, snow: 0.25, ...extra });
-    const M = this.mats = {
-      jacket: cloth(0x8a8f96, 0.82),
-      jacketDark: cloth(0x2a2d31, 0.9),
-      pants: cloth(0x3a3f46, 0.98),
-      skin: new THREE.MeshStandardMaterial({ color: 0xc8957a, roughness: 0.62 }),
-      hair: cloth(0x1b1612, 1.0, { scale: 0.05, bump: 1.4 }),
-      eye: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.3 }),
-      glove: cloth(0x23262a, 0.95),
-      boot: surfMat(null, { kind: 'wood', mapping: 'local', scale: 0.3, bump: 0.6, tex: 0.4, color: 0x5b3b22, roughness: 0.75, snow: 0.5 }),
-      sole: cloth(0x1a1a1a, 1.05),
-      pack: cloth(0x2f4a3a, 0.9, { scale: 0.18, bump: 1.2 }),
-      packAccent: cloth(0x1c2621, 0.9, { scale: 0.18, bump: 1.2 }),
-      strap: cloth(0x15171a, 1.0, { scale: 0.06 }),
-      pad: cloth(0xd27a26, 0.8, { scale: 0.3, bump: 0.5 }),
-      bottle: new THREE.MeshStandardMaterial({ color: 0x2c6fb0, roughness: 0.3, metalness: 0.25 }),
-      hat: cloth(0x9b2424, 1.05, { scale: 0.07, bump: 1.6 }),
-      pole: surfMat(null, { kind: 'metal', mapping: 'local', scale: 0.4, bump: 0.5, tex: 0.4, color: 0xb8bec6, roughness: 0.6, metalness: 0.85, snow: 0 }),
-      grip: cloth(0x111111, 0.8, { scale: 0.04 }),
-      lamp: new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: 0xfff2c0, emissiveIntensity: 0 }),
-    };
-    const root = this.model = new THREE.Group();
-    this.scene.add(root);
-    // 骨盆
-    const pelvis = this.pelvis = joint(root, 0, 0.96, 0);
-    const hipM = mk(cap(0.12, 0.14), M.pants, pelvis, 0, -0.02, 0); hipM.rotation.z = Math.PI / 2; hipM.scale.set(1, 1, 0.78);
-    // 脊柱 / 躯干
-    const spine = this.spine = joint(pelvis, 0, 0.06, 0);
-    const torso = mk(cap(0.16, 0.3), M.jacket, spine, 0, 0.2, 0); torso.scale.set(1.2, 1, 0.74);
-    const belly = mk(cap(0.14, 0.08), M.jacket, spine, 0, 0.02, 0.01); belly.scale.set(1.18, 1, 0.8);
-    mk(new THREE.BoxGeometry(0.018, 0.4, 0.02), M.jacketDark, spine, 0, 0.17, 0.122); // 拉链
-    const collar = mk(new THREE.TorusGeometry(0.085, 0.04, 8, 16), M.jacket, spine, 0, 0.42, -0.005); collar.rotation.x = Math.PI / 2; collar.scale.set(1.1, 1, 1);
-    // 头
-    const neck = this.neck = joint(spine, 0, 0.44, 0);
-    mk(cap(0.045, 0.06), M.skin, neck, 0, 0.03, 0);
-    const head = this.head = joint(neck, 0, 0.1, 0.01);
-    const skull = mk(new THREE.SphereGeometry(0.115, 18, 14), M.skin, head, 0, 0.04, 0); skull.scale.set(0.9, 1.06, 0.98);
-    const jaw = mk(new THREE.SphereGeometry(0.085, 14, 10), M.skin, head, 0, -0.03, 0.03); jaw.scale.set(1, 0.8, 1);
-    const nose = mk(new THREE.ConeGeometry(0.018, 0.05, 6), M.skin, head, 0, 0.03, 0.115); nose.rotation.x = Math.PI / 2;
-    for (const s of [-1, 1]) {
-      mk(new THREE.SphereGeometry(0.012, 6, 6), M.eye, head, s * 0.038, 0.06, 0.098);
-      mk(new THREE.SphereGeometry(0.022, 8, 6), M.skin, head, s * 0.103, 0.04, 0).scale.set(0.5, 1, 0.8);
-    }
-    mk(new THREE.SphereGeometry(0.118, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), M.hair, head, 0, 0.05, -0.01).scale.set(0.92, 1.05, 1);
-    // 毛线帽
-    this.hatG = joint(head, 0, 0.06, 0);
-    mk(new THREE.SphereGeometry(0.124, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), M.hat, this.hatG, 0, 0.02, -0.005).scale.set(0.95, 1.1, 1.02);
-    const cuff = mk(new THREE.TorusGeometry(0.112, 0.025, 8, 20), M.hat, this.hatG, 0, 0.02, -0.005); cuff.rotation.x = Math.PI / 2;
-    mk(new THREE.SphereGeometry(0.04, 10, 8), M.hat, this.hatG, 0, 0.16, -0.01);
-    // 头灯
-    this.lampG = joint(head, 0, 0.09, 0);
-    const band = mk(new THREE.TorusGeometry(0.118, 0.008, 4, 24), M.strap, this.lampG, 0, 0, 0); band.rotation.x = Math.PI / 2 - 0.15;
-    mk(new THREE.BoxGeometry(0.06, 0.038, 0.03), M.lamp, this.lampG, 0, 0.0, 0.118);
-
-    // 手臂
-    this.arm = {};
-    for (const [side, s] of [['L', -1], ['R', 1]]) {
-      const sh = joint(spine, s * 0.215, 0.36, -0.01);
-      mk(new THREE.SphereGeometry(0.07, 12, 10), M.jacket, sh, 0, 0, 0);
-      mk(cap(0.056, 0.2), M.jacket, sh, 0, -0.14, 0);
-      const el = joint(sh, 0, -0.28, 0);
-      mk(cap(0.05, 0.17), M.jacket, el, 0, -0.12, 0);
-      const hand = joint(el, 0, -0.27, 0);
-      const glove = mk(new THREE.SphereGeometry(0.05, 10, 8), M.glove, hand, 0, -0.01, 0.01); glove.scale.set(0.85, 1.15, 1);
-      // 登山杖
-      const pole = joint(hand, 0, -0.01, 0.02);
-      mk(new THREE.CylinderGeometry(0.021, 0.021, 0.13, 8), M.grip, pole, 0, 0.0, 0);
-      mk(new THREE.CylinderGeometry(0.011, 0.009, 1.12, 6), M.pole, pole, 0, -0.6, 0);
-      mk(new THREE.CylinderGeometry(0.035, 0.035, 0.008, 10), M.grip, pole, 0, -1.04, 0);
-      mk(new THREE.ConeGeometry(0.008, 0.04, 5), M.grip, pole, 0, -1.18, 0).rotation.x = Math.PI;
-      pole.visible = false;
-      this.arm[side] = { sh, el, hand, pole };
-    }
-    // 腿
-    this.leg = {};
-    for (const [side, s] of [['L', -1], ['R', 1]]) {
-      const hip = joint(pelvis, s * 0.1, -0.04, 0);
-      mk(cap(0.083, 0.3), M.pants, hip, 0, -0.21, 0);
-      const kn = joint(hip, 0, -0.43, 0);
-      mk(cap(0.068, 0.3), M.pants, kn, 0, -0.2, 0);
-      const an = joint(kn, 0, -0.43, 0);
-      const boot = mk(cap(0.062, 0.15), M.boot, an, 0, -0.05, 0.045); boot.rotation.x = Math.PI / 2; boot.scale.set(1.15, 1, 0.85);
-      mk(cap(0.065, 0.08), M.boot, an, 0, -0.02, 0).scale.set(1.05, 1, 1.05);
-      const sole = mk(new THREE.BoxGeometry(0.13, 0.03, 0.29), M.sole, an, 0, -0.1, 0.045);
-      this.leg[side] = { hip, kn, an, sole };
-    }
-    // 背包（挂在脊柱上）
-    const pk = this.packG = joint(spine, 0, 0.18, -0.13);
-    this.packBody = mk(cap(0.16, 0.3), M.pack, pk, 0, 0, -0.1); this.packBody.scale.set(1.2, 1, 0.68);
-    this.packLid = mk(new THREE.SphereGeometry(0.17, 14, 10), M.packAccent, pk, 0, 0.27, -0.1); this.packLid.scale.set(1.05, 0.38, 0.72);
-    this.packPocket = mk(cap(0.1, 0.12), M.packAccent, pk, 0, -0.06, -0.24); this.packPocket.scale.set(1.3, 1, 0.5);
-    this.bottle = mk(new THREE.CylinderGeometry(0.035, 0.035, 0.2, 10), M.bottle, pk, 0.2, -0.08, -0.1);
-    this.padRoll = mk(new THREE.CylinderGeometry(0.075, 0.075, 0.48, 14), M.pad, pk, 0, -0.3, -0.12); this.padRoll.rotation.z = Math.PI / 2;
-    for (const s of [-1, 1]) {
-      const st = mk(new THREE.BoxGeometry(0.045, 0.42, 0.02), M.strap, spine, s * 0.1, 0.2, 0.125); st.rotation.z = s * 0.06;
-      const st2 = mk(new THREE.TorusGeometry(0.07, 0.012, 4, 10, Math.PI), M.strap, spine, s * 0.11, 0.39, 0.02); st2.rotation.y = Math.PI / 2;
-    }
-    mk(new THREE.BoxGeometry(0.2, 0.022, 0.02), M.strap, spine, 0, 0.27, 0.128); // 胸带
-    const belt = mk(new THREE.TorusGeometry(0.15, 0.022, 6, 18), M.strap, pelvis, 0, 0.05, 0); belt.rotation.x = Math.PI / 2; belt.scale.set(1.08, 0.8, 1);
+    // 人形在 human.js 里拼（主角和路人共用），这里只接上各个关节和可开关的部件
+    const M = this.mats = humanMats(0x8a8f96);
+    const H = buildHuman(M);
+    this.model = H.root;
+    this.scene.add(H.root);
+    Object.assign(this, { pelvis: H.pelvis, spine: H.spine, neck: H.neck, head: H.head, hatG: H.hatG, lampG: H.lampG, arm: H.arm, leg: H.leg,
+      packG: H.packG, packBody: H.packBody, packLid: H.packLid, packPocket: H.packPocket, bottle: H.bottle, padRoll: H.padRoll });
 
     // 头灯光
     this.lamp = new THREE.SpotLight(0xfff1d6, 0, 60, 0.5, 0.45, 1.2);
@@ -204,15 +105,18 @@ export class Player {
     this.hatG.visible = worn.has('hat');
     this.mats.boot.color.setHex(inv.items.boots ? 0x5b3b22 : 0xc9c9c9);
     const c = inv.backpack ? inv.backpack.cap : 20;
-    const s = 0.65 + c / 50 * 0.75;
-    this.packBody.scale.set(1.0 + c / 120, s, 0.55 + c / 110);
-    this.packBody.position.set(0, (s - 1) * 0.12, -0.08 - c / 500);
-    this.packLid.position.set(0, 0.24 * s + 0.04, this.packBody.position.z);
-    this.packPocket.position.set(0, -0.04, this.packBody.position.z - 0.12 - c / 600);
+    // 背包按容量缩放：20 升的小包到 65 升的大包
+    const sy = 0.68 + c / 50 * 0.5, sx = 1.0 + c / 160, sz = 0.52 + c / 170;
+    this.packBody.scale.set(sx, sy, sz);
+    const bz = -0.005 - 0.15 * sz;                      // 主袋中心：前面贴着后背
+    this.packBody.position.set(0, (sy - 1) * 0.1, bz);
+    this.packLid.scale.set(sx, 1, Math.max(0.8, sz));
+    this.packLid.position.set(0, this.packBody.position.y + 0.3 * sy + 0.01, bz - 0.01);
+    this.packPocket.position.set(0, this.packBody.position.y - 0.04, bz - 0.15 * sz - 0.01);
     this.bottle.visible = (inv.items.bottle || 0) > 0;
-    this.bottle.position.set(0.17 + c / 400, -0.06, this.packBody.position.z);
+    this.bottle.position.set(0.15 * sx + 0.012, this.packBody.position.y - 0.14 * sy, bz - 0.01);
     this.padRoll.visible = !!(inv.items.pad || inv.items.tent3 || inv.items.tent4);
-    this.padRoll.position.set(0, -0.22 * s - 0.08, this.packBody.position.z);
+    this.padRoll.position.set(0, this.packBody.position.y - 0.3 * sy - 0.07, bz - 0.02);
     this.hasPoles = !!inv.items.poles;
     if (!this.hasPoles) this.polesOut = false;
     this.lampG.visible = !!inv.items.lamp;

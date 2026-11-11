@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { ROUTE, routeZ, segIndexAt, altToY, yToAlt, ROUTE_LENGTH, WORLD } from './data.js';
 import { makeNoise, hash2, mulberry32, clamp, smoothstep, lerp } from './noise.js';
-import { surfMat, QUAL } from './materials.js';
+import { surfMat, tex, QUAL } from './materials.js';
 import { merge, paint, crease, puff, displace, xf, rockGeo } from './geo.js';
 
 const N = makeNoise(20181026);
@@ -276,9 +276,11 @@ export function initTerrainAssets(U) {
   MAT.terrain = surfMat(U, { kind: 'ground', terrain: true, vertexColors: true, roughness: 1, metalness: 0 });
   MAT.rock = surfMat(U, { kind: 'rock', vertexColors: true, roughness: 1, scale: 3.4, bump: 1.6, macro: 0.25, lichen: 1 });
   MAT.bark = surfMat(U, { kind: 'bark', vertexColors: true, roughness: 1, scale: 1.0, bump: 1.3, sway: 0.05, snow: 0.5, macro: 0.2 });
-  // 近处的树冠：叶片之间镂空、双面（从叶缝里能看进树冠内部）；远处和轻量模式用实心的
+  // 树冠内核和远处的简化树冠：实心的一团，带树叶贴图
   MAT.leaf = surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4 });
-  MAT.leafHi = QUAL.lite ? MAT.leaf : surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4, cut: 0.3, side: THREE.DoubleSide });
+  // 枝叶面片：贴图自带叶片轮廓（镂空），法线不随正反面翻转；阴影也按轮廓镂空
+  const cardMat = (kind) => surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.78, side: THREE.DoubleSide, sway: 0.05, trans: 1.0, noflip: true, map: tex(kind).a, alphaTest: 0.34, alphaToCoverage: !QUAL.lite });
+  MAT.spray = cardMat('spray'); MAT.bough = cardMat('bough');
   MAT.tree = MAT.leaf;
   MAT.grass = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.82, side: THREE.DoubleSide, sway: 0.35, grass: true, trans: 1.0, snow: 0.8 });
   MAT.flower = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.6, side: THREE.DoubleSide, sway: 0.3, grass: true, trans: 0.8, emissive: 0x0a0a0a });
@@ -438,151 +440,247 @@ function skirt(R, h, droop, lobes, seg, seed, color, y0) {
   return g.toNonIndexed();
 }
 
-// 每局开始时按季节生成树木几何。GEO[kind] = [近处精细版（树干、树叶两组材质）, 远处简化版（单材质）]
+// ---- 枝叶面片 ----
+const _c1 = new THREE.Vector3(), _c2 = new THREE.Vector3(), _c3 = new THREE.Vector3();
+// 一片枝叶：从 base 沿 dir 伸出去的一条弯曲面片（贴图的 v 方向沿着枝条，根部在 v=0）。
+// side 是面片的横向；droop > 0 末端下垂、< 0 上翘。nrm(x,y,z,out) 给每个顶点一个法线（让整团树冠受光连成一片）
+function card(base, dir, side, len, wid, droop, c0, c1, nrm, rows = 3) {
+  const pos = [], uv = [], col = [], nor = [], idx = [];
+  for (let i = 0; i < rows; i++) {
+    const t = i / (rows - 1);
+    const cx = base[0] + dir[0] * len * t, cy = base[1] + dir[1] * len * t - droop * len * t * t, cz = base[2] + dir[2] * len * t;
+    for (const s of [-0.5, 0.5]) {
+      const x = cx + side[0] * wid * s, y = cy + side[1] * wid * s, z = cz + side[2] * wid * s;
+      pos.push(x, y, z); uv.push(s + 0.5, 0.015 + t * 0.97);
+      col.push(c0.r + (c1.r - c0.r) * t, c0.g + (c1.g - c0.g) * t, c0.b + (c1.b - c0.b) * t);
+      nrm(x, y, z, _c1); nor.push(_c1.x, _c1.y, _c1.z);
+    }
+    if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+// 一团树冠：从团心往四面八方伸出去的十来片枝叶 + 团心一个深色的实心核（挡住透光的窟窿）
+// 返回 { cards, core }。flat < 1 时压扁成一层（盆景、杜鹃）；droopK 叶片下垂的程度
+function lobe(center, R, n, color, seed, { flat = 1, droopK = 0.22, size = 1, upBias = 0.25, coreK = 0.5 } = {}) {
+  const r = mulberry32(seed);
+  const cards = [];
+  const [cx, cy, cz] = center;
+  const nrm = (x, y, z, out) => out.set(x - cx, (y - cy) / flat + R * 0.45, z - cz).normalize();
+  for (let i = 0; i < n; i++) {
+    // 方向：均匀撒在球面上，略偏上
+    const u = (i + r()) / n, th = r() * 6.2832 + i * 2.39996;
+    let dy = 1 - 2 * u * (1 - upBias) - upBias * 0.3; dy = Math.max(-0.75, Math.min(1, dy));
+    const rr = Math.sqrt(Math.max(0, 1 - dy * dy));
+    const d = _c2.set(Math.cos(th) * rr, dy * flat, Math.sin(th) * rr).normalize();
+    const inner = 0.12 + r() * 0.3;
+    const base = [cx + d.x * R * inner, cy + d.y * R * inner, cz + d.z * R * inner];
+    const dir = [d.x + (r() - 0.5) * 0.5, d.y + (r() - 0.5) * 0.35, d.z + (r() - 0.5) * 0.5];
+    const dl = Math.hypot(dir[0], dir[1], dir[2]); dir[0] /= dl; dir[1] /= dl; dir[2] /= dl;
+    // 面片朝向：绕枝条随机转一个角度
+    _c3.set(r() - 0.5, r() - 0.5, r() - 0.5).cross(_c1.set(dir[0], dir[1], dir[2])).normalize();
+    const side = [_c3.x, _c3.y, _c3.z];
+    const len = R * (0.82 + r() * 0.42) * size, wid = len * (0.78 + r() * 0.2);
+    const tone = 0.78 + r() * 0.44, hue = r();
+    const up = 0.5 + 0.5 * d.y;                       // 朝天的亮，朝地的暗
+    const k1 = tone * (0.55 + 0.45 * up), k0 = k1 * 0.5;
+    const c1 = new THREE.Color(color.r * k1 * (0.92 + hue * 0.18), color.g * k1, color.b * k1 * (1.08 - hue * 0.2));
+    const c0 = new THREE.Color(color.r * k0, color.g * k0, color.b * k0);
+    cards.push(card(base, dir, side, len, wid, droopK * (0.5 + r()), c0, c1, nrm));
+  }
+  const core = coreK > 0 ? blob(R * coreK, 0, seed + 7, color.clone().multiplyScalar(0.42), { jit: 0.3, s: [1, flat, 1], p: center, dark: 0.6 }) : null;
+  return { cards, core };
+}
+// 针叶树的一根枝：一片平着的（俯视看得见）+ 一片立着的（侧面看有厚度）
+function boughPair(base, ang, len, pitch, color, tone, r, finK = 0.5, droop = 0.12) {
+  const cp = Math.cos(pitch), dir = [Math.cos(ang) * cp, Math.sin(pitch), Math.sin(ang) * cp];
+  const sideH = [-Math.sin(ang), 0, Math.cos(ang)];
+  const nrm = (x, y, z, out) => out.set(Math.cos(ang) * 0.55, 0.9, Math.sin(ang) * 0.55).normalize();
+  const k1 = tone, k0 = tone * 0.45;
+  const c1 = new THREE.Color(color.r * k1, color.g * k1, color.b * k1), c0 = new THREE.Color(color.r * k0, color.g * k0, color.b * k0);
+  const out = [card(base, dir, sideH, len, len * (0.62 + r() * 0.12), droop, c0, c1, nrm)];
+  if (finK > 0) {
+    const nrm2 = (x, y, z, o) => o.set(Math.cos(ang) * 0.75 + sideH[0] * 0.3, 0.6, Math.sin(ang) * 0.75 + sideH[2] * 0.3).normalize();
+    const c1b = c1.clone().multiplyScalar(0.82), c0b = c0.clone().multiplyScalar(0.82);
+    out.push(card([base[0], base[1] - len * 0.04, base[2]], dir, [0, 1, 0], len * 0.96, len * finK, droop, c0b, c1b, nrm2));
+  }
+  return out;
+}
+const HI_MATS = {};
+const HI_DIST = () => (QUAL.lite ? 0 : 1);      // 精细的树用到第几圈地块：手机只用脚下这一块
+
+// 每局开始时按季节生成树木几何。GEO[kind] = [近处精细版（树干 / 枝叶面片 / 树冠内核 三组材质）, 远处简化版（单材质）]
 export function buildVegetation(seasonKey) {
   const sk = seasonKey;
   for (const k of ['fir', 'larch', 'birch', 'maple', 'maple2', 'bonsai', 'rhodo', 'shrub', 'dead']) if (GEO[k]) for (const g of GEO[k]) g.dispose();
   if (GEO.bloom) GEO.bloom.dispose();
-  const fc = (kind) => FOL[kind][sk] ? col3(FOL[kind][sk]).multiplyScalar(1.2) : null;   // 叶片贴图和明暗会压暗一些，这里补回来
-  const two = (bark, leaf, lo) => [merge(null, [bark, leaf]), merge(lo)];
+  const fc = (kind, k = 1.2) => FOL[kind][sk] ? col3(FOL[kind][sk]).multiplyScalar(k) : null;
+  const pack = (kind, bark, cards, cores, lo, conifer) => {
+    GEO[kind] = [merge(null, [bark, cards, cores.filter(Boolean)]), merge(lo)];
+    HI_MATS[kind] = [MAT.bark, conifer ? MAT.bough : MAT.spray, MAT.leaf];
+  };
 
-  // 冷杉：一层层下垂的枝层
+  // 冷杉：一轮轮向外平伸、末端下垂的枝；中间一根深色的锥芯挡住透光
   {
-    const f = fc('fir');
-    const bark = [trunkGeo(7.4, 0.22, 0.03, TRUNK, { seed: 11, bend: 0.05 })];
-    const leaf = [], lo = [trunkGeo(3, 0.2, 0.08, TRUNK, { seg: 5, rings: 2, seed: 11, bend: 0 })];
-    const tiers = 9;
+    const f = fc('fir', 1.75), fl = fc('fir'); f.r *= 1.12; f.b *= 0.72;
+    const r0 = mulberry32(11);
+    const bark = [trunkGeo(7.5, 0.22, 0.03, TRUNK, { seed: 11, bend: 0.05 })];
+    const cards = [], cores = [], lo = [trunkGeo(3, 0.2, 0.08, TRUNK, { seg: 5, rings: 2, seed: 11, bend: 0 })];
+    const tiers = 11;
     for (let k = 0; k < tiers; k++) {
       const u = k / (tiers - 1);
-      const R = lerp(1.95, 0.34, Math.pow(u, 0.85)), h = lerp(1.25, 0.8, u);
-      leaf.push(skirt(R, h, 0.32 * (1 - u * 0.5), 5 + (k % 3), 12, 300 + k, f.clone().multiplyScalar(0.86 + u * 0.34), 1.25 + k * 0.7));
+      const R = lerp(2.05, 0.42, Math.pow(u, 0.85)), y = 1.15 + k * 0.6;
+      const nb = k < 4 ? 7 : k < 8 ? 6 : 5;
+      for (let b = 0; b < nb; b++) {
+        const a = b / nb * 6.2832 + k * 0.77 + (r0() - 0.5) * 0.35;
+        const len = R * (0.88 + r0() * 0.26);
+        cards.push(...boughPair([Math.cos(a) * 0.05, y + (r0() - 0.5) * 0.18, Math.sin(a) * 0.05], a, len, -0.16 - r0() * 0.14 + u * 0.3, f, 0.72 + r0() * 0.36 + u * 0.2, r0, 0.46, 0.16 * (1 - u)));
+      }
     }
-    leaf.push(paint(xf(new THREE.ConeGeometry(0.14, 0.75, 6), { p: [0, 7.72, 0] }).toNonIndexed(), f.clone().multiplyScalar(1.25)));
-    for (let k = 0; k < 4; k++) {
-      const u = k / 3;
-      lo.push(skirt(lerp(1.95, 0.5, u), lerp(2.3, 1.7, u), 0.3, 5, 7, 320 + k, f.clone().multiplyScalar(0.9 + u * 0.3), 1.3 + k * 1.6));
-    }
-    GEO.fir = two(bark, leaf, lo);
+    // 树尖
+    for (let b = 0; b < 3; b++) cards.push(...boughPair([0, 7.45, 0], b * 2.094, 0.7, 1.15, f, 1.15, r0, 0, 0));
+    cores.push(paint(xf(new THREE.ConeGeometry(0.62, 6.3, 7, 3, true), { p: [0, 4.4, 0] }).toNonIndexed(), fl.clone().multiplyScalar(0.36)));
+    for (let k = 0; k < 4; k++) { const u = k / 3; lo.push(skirt(lerp(1.95, 0.5, u), lerp(2.3, 1.7, u), 0.3, 5, 7, 320 + k, fl.clone().multiplyScalar(0.9 + u * 0.3), 1.3 + k * 1.6)); }
+    pack('fir', bark, cards, cores, lo, true);
   }
-  // 太白红杉（落叶松）：稀疏通透，一轮轮平伸的枝
+  // 太白红杉（落叶松）：稀疏通透，枝条略上扬，一簇簇短针
   {
-    const f = fc('larch');
-    const bark = [trunkGeo(7.6, 0.2, 0.03, TRUNK, { seed: 31, bend: 0.1 })];
-    const leaf = [], lo = [trunkGeo(7.4, 0.2, 0.04, TRUNK, { seg: 5, rings: 3, seed: 31, bend: 0.1 })];
+    const f = fc('larch', 1.7), fl = fc('larch');
     const r0 = mulberry32(31);
-    for (let k = 0; k < 7; k++) {
-      const y = 1.7 + k * 0.8, rad = lerp(1.7, 0.4, k / 6);
-      for (let b = 0; b < 4; b++) {
-        const a = b / 4 * Math.PI * 2 + k * 0.9 + r0() * 0.4;
-        const ex = Math.cos(a) * rad, ez = Math.sin(a) * rad, ey = y + rad * 0.18 + (r0() - 0.5) * 0.1;
-        bark.push(limb([0, y, 0], [ex, ey, ez], 0.045, 0.012, TRUNK, 4));
-        if (f) for (let q = 0; q < 2; q++) {
-          const t = q ? 0.95 : 0.55, sz = (0.3 + rad * 0.2) * (q ? 0.8 : 1);
-          leaf.push(blob(sz, 1, 400 + k * 8 + b * 2 + q, f, { jit: 0.35, s: [1.5, 0.48, 1.15], p: [ex * t, lerp(y, ey, t) - 0.03, ez * t], dark: 0.62 }));
-        }
+    const bark = [trunkGeo(7.6, 0.2, 0.03, TRUNK, { seed: 31, bend: 0.1 })];
+    const cards = [], lo = [trunkGeo(7.4, 0.2, 0.04, TRUNK, { seg: 5, rings: 3, seed: 31, bend: 0.1 })];
+    const NT = 13;
+    for (let k = 0; k < NT; k++) {
+      const u = k / (NT - 1), y = 1.6 + k * 0.47, rad = lerp(1.8, 0.4, Math.pow(u, 0.9));
+      const nb = k < 8 ? 6 : 5;
+      for (let b = 0; b < nb; b++) {
+        const a = b / nb * 6.2832 + k * 0.9 + r0() * 0.5, len = rad * (0.8 + r0() * 0.4), pitch = -0.04 + r0() * 0.2 + u * 0.25;
+        bark.push(limb([0, y, 0], [Math.cos(a) * len * 0.8, y + Math.sin(pitch) * len * 0.8, Math.sin(a) * len * 0.8], 0.035, 0.008, TRUNK, 3));
+        if (f) cards.push(...boughPair([Math.cos(a) * 0.04, y + (r0() - 0.5) * 0.15, Math.sin(a) * 0.04], a, len, pitch, f, 0.72 + r0() * 0.42, r0, 0.44, 0.24));
+        else if (b % 2 === 0) { const e = [Math.cos(a) * len * 0.8, y + Math.sin(pitch) * len * 0.8, Math.sin(a) * len * 0.8]; for (let q = -1; q <= 1; q += 2) bark.push(limb(e, [e[0] + Math.cos(a + q * 0.6) * 0.5, e[1] + 0.12, e[2] + Math.sin(a + q * 0.6) * 0.5], 0.01, 0.003, TRUNK, 3)); }
       }
-      if (k % 2 === 0) {
-        const fl = f || TRUNK.clone().multiplyScalar(0.8);
-        for (let b = 0; b < 3; b++) { const a = b / 3 * 6.28 + k; lo.push(blob(rad * 0.62, 0, 430 + k * 3 + b, fl, { jit: 0.3, s: [1.3, f ? 0.45 : 0.12, 1.0], p: [Math.cos(a) * rad * 0.6, y + 0.1, Math.sin(a) * rad * 0.6], dark: 0.65 })); }
-      }
+      // 远处的简化版：一层层压扁的圆盘
+      if (k % 2 === 0) { const c2 = fl || TRUNK.clone().multiplyScalar(0.8); lo.push(blob(rad * 0.92, 0, 430 + k, c2, { jit: 0.35, s: [1.0, fl ? 0.3 : 0.08, 1.0], p: [0, y + 0.05, 0], dark: 0.6 })); }
     }
-    GEO.larch = two(bark, leaf, lo);
+    pack('larch', bark, cards, [], lo, true);
   }
-  // 白桦：白树皮带黑色横纹
+  // 白桦：白树皮带黑色横纹，细高的树干，枝梢下垂的小叶
   {
-    const f = fc('birch');
+    const f = fc('birch', 1.55), fl = fc('birch');
     const mark = (c, x, y, z) => { const hh = Math.sin(y * 7.3 + Math.atan2(z, x) * 2) * Math.sin(y * 3.1 + x * 9); if (hh > 0.5) c.setRGB(0.16, 0.15, 0.14); else if (y < 0.5) c.multiplyScalar(0.55); };
-    const bark = [trunkGeo(6.2, 0.15, 0.04, BIRCH, { seed: 41, bend: 0.25, rings: 9, seg: 8, flare: 0.3, shade: mark })];
-    const leaf = [], lo = [trunkGeo(4.6, 0.15, 0.07, BIRCH, { seg: 5, rings: 3, seed: 41, bend: 0.25, flare: 0.3 })];
+    const bark = [trunkGeo(6.4, 0.15, 0.035, BIRCH, { seed: 41, bend: 0.25, rings: 9, seg: 8, flare: 0.3, shade: mark })];
+    const cards = [], cores = [], lo = [trunkGeo(4.6, 0.15, 0.07, BIRCH, { seg: 5, rings: 3, seed: 41, bend: 0.25, flare: 0.3 })];
     const r0 = mulberry32(41);
-    for (let b = 0; b < 5; b++) {
-      const a = b * 1.4 + r0(), y = 3.0 + b * 0.55, len = 1.5 - b * 0.12;
-      const e = [Math.cos(a) * len, y + len * 0.75, Math.sin(a) * len];
-      bark.push(limb([0, y, 0], e, 0.05, 0.015, BIRCH, 4));
+    for (let b = 0; b < 7; b++) {
+      const a = b * 2.2 + r0() * 0.6, y = 2.7 + b * 0.5, len = 1.55 - b * 0.1;
+      const e = [Math.cos(a) * len, y + len * 0.8, Math.sin(a) * len];
+      const m = [e[0] * 0.55, y + len * 0.5, e[2] * 0.55];
+      bark.push(limb([0, y, 0], m, 0.05, 0.03, BIRCH, 4)); bark.push(limb(m, e, 0.03, 0.01, BIRCH, 4));
       if (f) {
-        leaf.push(blob(0.72 + r0() * 0.3, 1, 60 + b, f, { jit: 0.34, s: [1, 0.86, 1], p: e, dark: 0.55 }));
-        leaf.push(blob(0.5 + r0() * 0.2, 1, 70 + b, f.clone().multiplyScalar(1.1), { jit: 0.36, s: [1, 0.8, 1], p: [e[0] * 0.5 + (r0() - 0.5) * 0.5, e[1] + 0.5 + r0() * 0.4, e[2] * 0.5 + (r0() - 0.5) * 0.5], dark: 0.6 }));
+        const L1 = lobe(e, 0.78 + r0() * 0.18, 12, f, 60 + b, { droopK: 0.5, size: 0.95, coreK: 0.5 }); cards.push(...L1.cards); cores.push(L1.core);
+        const L2 = lobe([m[0] * 1.15, m[1] + 0.2, m[2] * 1.15], 0.6, 6, f.clone().multiplyScalar(0.9), 80 + b, { droopK: 0.5, size: 0.95, coreK: 0 }); cards.push(...L2.cards);
       } else {
-        for (let q = 0; q < 3; q++) { const a2 = a + (q - 1) * 0.7; bark.push(limb(e, [e[0] + Math.cos(a2) * 0.7, e[1] + 0.6 + q * 0.1, e[2] + Math.sin(a2) * 0.7], 0.014, 0.004, BIRCH, 3)); }
-      }
-    }
-    if (f) { lo.push(blob(1.5, 0, 66, f, { jit: 0.3, s: [1, 1.15, 1], p: [0.2, 5.3, 0.1] })); lo.push(blob(1.1, 0, 67, f.clone().multiplyScalar(1.1), { jit: 0.3, p: [-0.6, 4.4, 0.5] })); }
-    GEO.birch = two(bark, leaf, lo);
-  }
-  // 槭树（秋天红 / 橙两种）：粗干、三四根大杈、圆阔的树冠
-  for (const kind of ['maple', 'maple2']) {
-    const f = fc(kind);
-    const sd = kind === 'maple' ? 17 : 23;
-    const r0 = mulberry32(sd);
-    const bark = [trunkGeo(3.3, 0.3, 0.16, TRUNK, { seed: sd, bend: 0.3, rings: 5, flare: 0.7 })];
-    const leaf = [], lo = [trunkGeo(3.2, 0.3, 0.14, TRUNK, { seg: 5, rings: 2, seed: sd, bend: 0.3 })];
-    for (let b = 0; b < 4; b++) {
-      const a = b * 1.6 + r0() * 0.5, len = 1.9 + r0() * 0.6;
-      const e = [Math.cos(a) * len * 0.75, 3.0 + len * 0.72, Math.sin(a) * len * 0.75];
-      bark.push(limb([0, 2.9, 0], e, 0.13, 0.04, TRUNK, 5));
-      if (f) {
-        leaf.push(blob(1.15 + r0() * 0.4, 1, 80 + b + sd, f, { jit: 0.3, s: [1.1, 0.82, 1.1], p: e, dark: 0.5 }));
-        leaf.push(blob(0.8 + r0() * 0.3, 1, 90 + b + sd, f.clone().multiplyScalar(0.9 + r0() * 0.3), { jit: 0.32, s: [1.1, 0.8, 1.1], p: [e[0] * 1.45, e[1] - 0.5 + r0() * 0.5, e[2] * 1.45], dark: 0.55 }));
-      } else {
-        for (let q = 0; q < 4; q++) { const a2 = a + (q - 1.5) * 0.6; const m = [e[0] + Math.cos(a2) * 0.9, e[1] + 0.5 + r0() * 0.5, e[2] + Math.sin(a2) * 0.9]; bark.push(limb(e, m, 0.035, 0.008, TRUNK, 3)); }
+        for (let q = 0; q < 4; q++) { const a2 = a + (q - 1.5) * 0.6; bark.push(limb(e, [e[0] + Math.cos(a2) * 0.7, e[1] + 0.5 - q * 0.2, e[2] + Math.sin(a2) * 0.7], 0.012, 0.003, BIRCH, 3)); }
       }
     }
     if (f) {
-      leaf.push(blob(1.3, 1, 99 + sd, f.clone().multiplyScalar(1.08), { jit: 0.3, s: [1.15, 0.78, 1.15], p: [0, 5.6, 0], dark: 0.6 }));
-      lo.push(blob(2.5, 1, 98 + sd, f, { jit: 0.26, s: [1.1, 0.72, 1.1], p: [0, 4.7, 0], dark: 0.5 }));
+      const Lt = lobe([0.1, 6.5, 0], 0.85, 10, f.clone().multiplyScalar(1.08), 77, { droopK: 0.4, coreK: 0.4 }); cards.push(...Lt.cards); cores.push(Lt.core);
+      for (let b = 0; b < 4; b++) { const a = b * 1.7 + 0.3; lo.push(blob(0.78 + (b % 2) * 0.16, 0, 66 + b, fl.clone().multiplyScalar(0.88 + (b % 3) * 0.12), { jit: 0.5, s: [1, 1.1, 1], p: [Math.cos(a) * 0.85, 3.9 + b * 0.62, Math.sin(a) * 0.85], dark: 0.5 })); }
+      lo.push(blob(0.85, 0, 71, fl.clone().multiplyScalar(1.1), { jit: 0.5, s: [1, 1.2, 1], p: [0.1, 6.5, 0] }));
     }
-    GEO[kind] = two(bark, leaf, lo);
+    pack('birch', bark, cards, cores, lo, false);
   }
-  // 盆景园：虬曲矮冷杉，枝叶成一层层平台
+  // 槭树（秋天红 / 橙两种）：粗干、四五根大杈、每根杈头一团叶子，合起来是个宽阔的树冠
+  for (const kind of ['maple', 'maple2']) {
+    const f = fc(kind, 1.55), fl = fc(kind);
+    const sd = kind === 'maple' ? 17 : 23;
+    const r0 = mulberry32(sd);
+    const bark = [trunkGeo(3.2, 0.3, 0.17, TRUNK, { seed: sd, bend: 0.3, rings: 5, flare: 0.7 })];
+    const cards = [], cores = [], lo = [trunkGeo(3.2, 0.3, 0.14, TRUNK, { seg: 5, rings: 2, seed: sd, bend: 0.3 })];
+    const nl = 5;
+    for (let b = 0; b < nl; b++) {
+      const a = b / nl * 6.2832 + r0() * 0.5, len = 2.0 + r0() * 0.7, rise = 0.62 + r0() * 0.25;
+      const m = [Math.cos(a) * len * 0.42, 3.0 + len * rise * 0.5, Math.sin(a) * len * 0.42];
+      const e = [Math.cos(a) * len * 0.82, 3.0 + len * rise, Math.sin(a) * len * 0.82];
+      bark.push(limb([0, 2.85, 0], m, 0.14, 0.08, TRUNK, 5)); bark.push(limb(m, e, 0.08, 0.03, TRUNK, 5));
+      // 杈上再分两根细枝
+      const subs = [];
+      for (let q = 0; q < 2; q++) { const a2 = a + (q ? 0.9 : -0.9) + (r0() - 0.5) * 0.4; const se = [m[0] + Math.cos(a2) * 1.1, m[1] + 0.5 + r0() * 0.5, m[2] + Math.sin(a2) * 1.1]; bark.push(limb(m, se, 0.045, 0.012, TRUNK, 4)); subs.push(se); }
+      if (f) {
+        const L1 = lobe(e, 1.15 + r0() * 0.3, 17, f.clone().multiplyScalar(0.92 + r0() * 0.2), sd * 10 + b, { coreK: 0.56 }); cards.push(...L1.cards); cores.push(L1.core);
+        for (const se of subs) { const L2 = lobe(se, 0.85 + r0() * 0.2, 11, f.clone().multiplyScalar(0.85 + r0() * 0.25), sd * 20 + b * 3 + (se === subs[0] ? 1 : 2), { coreK: 0.52 }); cards.push(...L2.cards); cores.push(L2.core); }
+      } else {
+        for (const se of [e, ...subs]) for (let q = 0; q < 3; q++) { const a2 = a + (q - 1) * 0.8; bark.push(limb(se, [se[0] + Math.cos(a2) * 0.7, se[1] + 0.35 + r0() * 0.4, se[2] + Math.sin(a2) * 0.7], 0.02, 0.005, TRUNK, 3)); }
+      }
+    }
+    if (f) {
+      const Lt = lobe([0, 5.9, 0], 1.3, 18, f.clone().multiplyScalar(1.1), sd * 30, { coreK: 0.58 }); cards.push(...Lt.cards); cores.push(Lt.core);
+      // 远处的简化版：也按“几根大杈各顶一团”来摆，轮廓是凹凸不平的一丛，不是一个圆球
+      for (let b = 0; b < nl; b++) { const a = b / nl * 6.2832 + 0.4; lo.push(blob(1.25 + (b % 2) * 0.25, 0, 98 + sd + b, fl.clone().multiplyScalar(0.85 + (b % 3) * 0.14), { jit: 0.5, s: [1.15, 0.78, 1.15], p: [Math.cos(a) * 1.75, 4.5 + (b % 2) * 0.5, Math.sin(a) * 1.75], dark: 0.45 })); }
+      lo.push(blob(1.35, 0, 97 + sd, fl.clone().multiplyScalar(1.1), { jit: 0.5, s: [1.1, 0.8, 1.1], p: [0.1, 5.9, -0.1], dark: 0.5 }));
+    }
+    pack(kind, bark, cards, cores, lo, false);
+  }
+  // 盆景园：虬曲矮冷杉，枝叶一层层平展
   {
-    const f = fc('fir');
+    const f = fc('fir', 1.9), fl = fc('fir'); f.r *= 1.12; f.b *= 0.72;
     const r0 = mulberry32(9);
-    const bark = [], leaf = [], lo = [];
+    const bark = [], cards = [], cores = [], lo = [];
     let p = [0, 0, 0];
+    const pad = (c, R, seed) => {
+      const n = 7;
+      for (let b = 0; b < n; b++) { const a = b / n * 6.2832 + r0(); cards.push(...boughPair([c[0], c[1], c[2]], a, R * (0.85 + r0() * 0.3), 0.04 + r0() * 0.1, f, 1.0 + r0() * 0.4, r0, 0.3, 0.08)); }
+      cores.push(blob(R * 0.6, 0, seed, fl.clone().multiplyScalar(0.8), { jit: 0.3, s: [1.2, 0.22, 1.2], p: [c[0], c[1] - 0.03, c[2]], dark: 0.6 }));
+    };
     for (let s = 0; s < 4; s++) {
       const q = [p[0] + (r0() - 0.5) * 0.9, p[1] + 0.62, p[2] + (r0() - 0.5) * 0.9];
       bark.push(limb(p, q, 0.2 - s * 0.04, 0.16 - s * 0.04, TRUNK_GREY, 6));
       if (s > 0) {
-        const a = r0() * 6.28, l = 0.9 + r0() * 0.5, e = [q[0] + Math.cos(a) * l, q[1] + 0.05, q[2] + Math.sin(a) * l];
+        const a = r0() * 6.28, l = 0.9 + r0() * 0.5, e = [q[0] + Math.cos(a) * l, q[1] + 0.08, q[2] + Math.sin(a) * l];
         bark.push(limb(q, e, 0.05, 0.02, TRUNK_GREY, 4));
-        leaf.push(blob(0.72 + r0() * 0.3, 1, 20 + s, f.clone().multiplyScalar(1.1 + r0() * 0.3), { jit: 0.34, s: [1.45, 0.3, 1.25], p: [e[0], e[1] + 0.12, e[2]], dark: 0.45 }));
+        pad(e, 0.85 + r0() * 0.25, 20 + s);
       }
       p = q;
     }
-    leaf.push(blob(0.85, 1, 29, f.clone().multiplyScalar(1.3), { jit: 0.34, s: [1.4, 0.34, 1.4], p: [p[0], p[1] + 0.15, p[2]], dark: 0.45 }));
+    pad([p[0], p[1] + 0.12, p[2]], 1.0, 29);
     lo.push(limb([0, 0, 0], p, 0.2, 0.06, TRUNK_GREY, 4));
-    lo.push(blob(1.25, 0, 28, f.clone().multiplyScalar(1.2), { jit: 0.3, s: [1.4, 0.3, 1.4], p: [p[0], p[1] + 0.1, p[2]], dark: 0.5 }));
-    lo.push(blob(0.9, 0, 27, f.clone().multiplyScalar(1.1), { jit: 0.3, s: [1.3, 0.3, 1.3], p: [p[0] * 0.3 + 0.7, p[1] * 0.6, p[2] * 0.3 - 0.4], dark: 0.5 }));
-    GEO.bonsai = two(bark, leaf, lo);
+    lo.push(blob(1.25, 0, 28, fl.clone().multiplyScalar(1.2), { jit: 0.3, s: [1.4, 0.3, 1.4], p: [p[0], p[1] + 0.1, p[2]], dark: 0.5 }));
+    lo.push(blob(0.9, 0, 27, fl.clone().multiplyScalar(1.1), { jit: 0.3, s: [1.3, 0.3, 1.3], p: [p[0] * 0.3 + 0.7, p[1] * 0.6, p[2] * 0.3 - 0.4], dark: 0.5 }));
+    pack('bonsai', bark, cards, cores, lo, true);
   }
   // 杜鹃灌丛 + 花簇
   {
-    const f = fc('rhodo');
+    const f = fc('rhodo', 1.7), fl = fc('rhodo');
     const r0 = mulberry32(13);
-    const bark = [], leaf = [], lo = [], bloomPts = [];
+    const bark = [], cards = [], cores = [], lo = [], bloomPts = [];
     for (let k = 0; k < 5; k++) {
-      const ox = (r0() - 0.5) * 1.2, oz = (r0() - 0.5) * 1.2, oy = 0.5 + r0() * 0.34, rad = 0.5 + r0() * 0.25;
-      bark.push(limb([ox * 0.2, 0, oz * 0.2], [ox, oy - 0.1, oz], 0.04, 0.02, TRUNK, 4));
-      leaf.push(blob(rad, 1, 40 + k, f.clone().multiplyScalar(0.9 + r0() * 0.3), { jit: 0.36, s: [1.2, 0.72, 1.2], p: [ox, oy, oz], dark: 0.5 }));
-      for (let b = 0; b < 5; b++) { const a = r0() * 6.28, rr = r0() * rad * 0.9; bloomPts.push([ox + Math.cos(a) * rr, oy + rad * 0.55 * Math.sqrt(Math.max(0, 1 - (rr / (rad * 1.2)) ** 2)) + 0.03, oz + Math.sin(a) * rr]); }
+      const ox = (r0() - 0.5) * 1.2, oz = (r0() - 0.5) * 1.2, oy = 0.42 + r0() * 0.3, rad = 0.5 + r0() * 0.2;
+      bark.push(limb([ox * 0.2, 0, oz * 0.2], [ox, oy, oz], 0.04, 0.02, TRUNK, 4));
+      const L1 = lobe([ox, oy, oz], rad, 9, f.clone().multiplyScalar(0.88 + r0() * 0.3), 40 + k, { flat: 0.75, droopK: 0.15, upBias: 0.5, coreK: 0.62 }); cards.push(...L1.cards); cores.push(L1.core);
+      for (let b = 0; b < 5; b++) { const a = r0() * 6.28, rr = r0() * rad * 0.9; bloomPts.push([ox + Math.cos(a) * rr, oy + rad * 0.62 * Math.sqrt(Math.max(0, 1 - (rr / (rad * 1.2)) ** 2)) + 0.05, oz + Math.sin(a) * rr]); }
     }
-    lo.push(blob(1.0, 0, 46, f, { jit: 0.3, s: [1.3, 0.62, 1.3], p: [0, 0.55, 0], dark: 0.5 }));
-    GEO.rhodo = two(bark, leaf, lo);
+    lo.push(blob(1.0, 0, 46, fl, { jit: 0.3, s: [1.3, 0.62, 1.3], p: [0, 0.55, 0], dark: 0.5 }));
+    pack('rhodo', bark, cards, cores, lo, false);
     const bl = bloomPts.map(([x, y, z], i) => paint(xf(crease(new THREE.IcosahedronGeometry(0.1 + (i % 3) * 0.02, 0), 80), { p: [x, y, z], s: [1, 0.7, 1] }), new THREE.Color(1, 1, 1), (c, px, py) => c.multiplyScalar(py > y ? 1.15 : 0.8)));
     GEO.bloom = merge(bl);
   }
   // 灌木 / 箭竹
   {
-    const f = fc('shrub');
+    const f = fc('shrub', 1.6), fl = fc('shrub');
     const r0 = mulberry32(53);
-    const bark = [], leaf = [], lo = [];
+    const bark = [], cards = [], cores = [], lo = [];
     for (let k = 0; k < 4; k++) {
-      const ox = (r0() - 0.5) * 1.0, oz = (r0() - 0.5) * 1.0;
-      bark.push(limb([ox * 0.3, 0, oz * 0.3], [ox, 0.35, oz], 0.03, 0.015, TRUNK, 3));
-      leaf.push(blob(0.48 + r0() * 0.28, 1, 40 + k, f.clone().multiplyScalar(0.88 + r0() * 0.3), { jit: 0.45, s: [1, 0.78, 1], p: [ox, 0.42 + r0() * 0.15, oz], dark: 0.5 }));
+      const ox = (r0() - 0.5) * 1.0, oz = (r0() - 0.5) * 1.0, oy = 0.36 + r0() * 0.18;
+      bark.push(limb([ox * 0.3, 0, oz * 0.3], [ox, oy, oz], 0.03, 0.015, TRUNK, 3));
+      const L1 = lobe([ox, oy, oz], 0.46 + r0() * 0.2, 8, f.clone().multiplyScalar(0.88 + r0() * 0.3), 140 + k, { flat: 0.85, upBias: 0.45, coreK: 0.55 }); cards.push(...L1.cards); cores.push(L1.core);
     }
-    lo.push(blob(0.9, 0, 48, f, { jit: 0.4, s: [1.1, 0.7, 1.1], p: [0, 0.45, 0], dark: 0.5 }));
-    GEO.shrub = two(bark, leaf, lo);
+    lo.push(blob(0.9, 0, 48, fl, { jit: 0.4, s: [1.1, 0.7, 1.1], p: [0, 0.45, 0], dark: 0.5 }));
+    pack('shrub', bark, cards, cores, lo, false);
   }
   // 火烧坡枯树：烧黑的树桩、风化发白的树干、折断的枝
   {
@@ -598,7 +696,7 @@ export function buildVegetation(seasonKey) {
       if (k % 2) bark.push(limb(e, [e[0] * 1.3, e[1] + 0.35, e[2] * 1.3 + 0.2], 0.012, 0.004, dc, 3));
       if (k % 3 === 0) lo.push(limb([0, y, 0], e, 0.05, 0.012, dc, 3));
     }
-    GEO.dead = [merge(null, [bark, []]), merge(lo)];
+    pack('dead', bark, [], [], lo, false);
   }
   VEG_SEASON = sk;
 }
@@ -725,7 +823,6 @@ function slopeNY(x, z) {
 }
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
-const TREE_MATS = [null, null];
 // 近处用精细模型，远处换成简化模型（只换引用，不重建实例）
 function setChunkLod(chunk, lod) {
   if (!chunk.objs || chunk.lod === lod) return;
@@ -733,7 +830,7 @@ function setChunkLod(chunk, lod) {
   for (const o of chunk.objs.children) {
     const L = o.userData.lods; if (!L) continue;
     o.geometry = L[lod];
-    if (o.userData.tree) o.material = lod ? MAT.leaf : TREE_MATS;
+    if (o.userData.tree) o.material = lod ? MAT.leaf : HI_MATS[o.userData.tree];
   }
 }
 
@@ -741,7 +838,6 @@ function buildObjects(chunk) {
   const x0 = chunk.cx * CHUNK, z0 = chunk.cz * CHUNK;
   const rnd = mulberry32((chunk.cx * 73856093) ^ (chunk.cz * 19349663) ^ 0x5bd1e995);
   const group = new THREE.Group();
-  TREE_MATS[0] = MAT.bark; TREE_MATS[1] = MAT.leafHi;
   const rocks = [], trees = { fir: [], larch: [], birch: [], maple: [], maple2: [], bonsai: [], rhodo: [], shrub: [], dead: [] };
   const ccx = x0 + CHUNK / 2, ccz = z0 + CHUNK / 2;
   const tries = Math.abs(ccz - routeZ(ccx)) < 220 + openAt(ccx) * 260 ? 1400 : 450;
@@ -802,7 +898,7 @@ function buildObjects(chunk) {
     }
   }
   // 岩石实例
-  const lod = chunk.lod = chunk.dist <= 1 ? 0 : 1;
+  const lod = chunk.lod = chunk.dist <= HI_DIST() ? 0 : 1;
   const byV = [[], [], []];
   for (const r of rocks) byV[r.v].push(r);
   byV.forEach((list, v) => {
@@ -827,8 +923,8 @@ function buildObjects(chunk) {
   for (const kind in trees) {
     const list = trees[kind];
     if (!list.length || !GEO[kind]) continue;
-    const im = new THREE.InstancedMesh(GEO[kind][lod], lod ? MAT.leaf : TREE_MATS, list.length);
-    im.userData.lods = GEO[kind]; im.userData.tree = true;
+    const im = new THREE.InstancedMesh(GEO[kind][lod], lod ? MAT.leaf : HI_MATS[kind], list.length);
+    im.userData.lods = GEO[kind]; im.userData.tree = kind;
     list.forEach((t, k) => {
       _q.setFromEuler(_e.set(0, t.rot, 0));
       _s.set(t.s, t.s * (0.85 + (t.rot % 0.3)), t.s);
@@ -975,7 +1071,7 @@ export class TerrainManager {
       const dist = Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz));
       if (dist > R + 1) { this.disposeChunk(c); this.chunks.delete(k); continue; }
       if (dist > 4 && c.objs) this.disposeObjs(c);
-      else if (c.objs) setChunkLod(c, dist <= 1 ? 0 : 1);
+      else if (c.objs) setChunkLod(c, dist <= HI_DIST() ? 0 : 1);
       if (dist > 2 && c.grassDone) { if (c.grass) this.disposeGroup(c.grass); c.grass = null; c.grassDone = false; }
       else if (c.grass) { const gg = dist === 0 ? GEO.grass : GEO.grassLo; for (const o of c.grass.children) if (o.userData.grass && o.geometry !== gg) o.geometry = gg; }
     }

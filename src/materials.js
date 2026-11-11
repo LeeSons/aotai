@@ -170,11 +170,11 @@ KINDS.bark = { tile: 1.1, relief: 0.05, glsl: `
 void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
   float warp = fbm(uv, vec2(4.0, 2.0), 3, 41.0) - 0.5;
   vec2 q = vec2(uv.x + warp * 0.11, uv.y);
-  vec4 v = vor(q * vec2(11.0, 3.0), vec2(11.0, 3.0), 42.0);
-  float furrow = smoothstep(0.0, 0.24, v.y - v.x);
-  float fine = fbm(uv, vec2(60.0, 12.0), 4, 43.0), flake = fbm(uv, vec2(22.0, 8.0), 3, 44.0);
-  h = furrow * (0.55 + 0.32 * v.z) + (fine - 0.5) * 0.22 + (flake - 0.5) * 0.16;
-  vec3 col = vec3(0.5) * (0.5 + 0.55 * furrow + 0.36 * (fine - 0.5) + 0.32 * (v.w - 0.5));
+  vec4 v = vor(q * vec2(16.0, 4.0), vec2(16.0, 4.0), 42.0);
+  float furrow = smoothstep(0.0, 0.11, v.y - v.x + (fbm(uv, vec2(30.0, 9.0), 2, 46.0) - 0.5) * 0.05);
+  float fine = fbm(uv, vec2(70.0, 9.0), 4, 43.0), flake = fbm(uv, vec2(22.0, 8.0), 3, 44.0);
+  h = furrow * (0.5 + 0.3 * v.z) + (fine - 0.5) * 0.3 + (flake - 0.5) * 0.2;
+  vec3 col = vec3(0.5) * (0.68 + 0.36 * furrow + 0.46 * (fine - 0.5) + 0.3 * (v.w - 0.5) + 0.2 * (flake - 0.5));
   float moss = smoothstep(0.6, 0.86, fbm(uv, vec2(3.0), 4, 45.0));
   col = mix(col, col * vec3(0.86, 1.12, 0.72), moss * 0.6);
   c = col; r = 0.93; ao = mix(0.4, 1.0, furrow);
@@ -207,6 +207,85 @@ void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
   vec3 col = vec3(0.5) * tone * mix(vec3(1.14, 1.03, 0.74), vec3(0.86, 1.0, 1.08), hue) * (1.0 + rib * 0.18);
   col *= mix(0.5, 1.0, smoothstep(0.1, 0.6, hh));
   c = col; r = 0.72; ao = mix(0.3, 1.0, smoothstep(0.0, 0.5, hh));
+}` };
+// 阔叶枝：一根小枝带两根侧枝，叶子互生、有叶柄和叶脉。透明通道是叶片轮廓（当面片贴图用，不平铺）
+KINDS.spray = { tile: 1, relief: 0, raw: true, glsl: `
+// 一片叶子：p0 叶柄根部，a 朝向，L 长，W 半宽。返回 x 轮廓 y 沿叶长 0..1 z 横向 -1..1
+vec3 leafAt(vec2 uv, vec2 p0, float a, float L, float W){
+  vec2 d = uv - p0; float ca = cos(a), sa = sin(a);
+  vec2 q = vec2(ca * d.x + sa * d.y, -sa * d.x + ca * d.y);
+  float t = q.x / L;
+  if (t < -0.02 || t > 1.02) return vec3(0.0);
+  float tt = clamp(t, 0.0, 1.0);
+  float w = W * pow(sin(3.14159 * pow(tt, 0.72)), 0.8) * smoothstep(0.0, 0.16, tt) + 0.0045;
+  return vec3(smoothstep(0.006, -0.006, abs(q.y) - w), tt, q.y / max(w, 1e-4));
+}
+float segDist(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)); }
+void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
+  float mask = 0.0; vec3 col = vec3(0.62, 0.66, 0.5);
+  // 三根枝：主枝往上，左右各一根侧枝
+  vec2 b0 = vec2(0.5, 0.0), e0 = vec2(0.52, 0.8);
+  vec2 b1 = mix(b0, e0, 0.24), e1 = b1 + vec2(-0.3, 0.3);
+  vec2 b2 = mix(b0, e0, 0.42), e2 = b2 + vec2(0.29, 0.27);
+  float tw = min(segDist(uv, b0, e0), min(segDist(uv, b1, e1), segDist(uv, b2, e2)));
+  float twig = smoothstep(0.011, 0.006, tw);
+  col = mix(col, vec3(0.42, 0.34, 0.26), twig); mask = twig;
+  for (int i = 0; i < 30; i++){
+    float fi = float(i); vec3 rn = hash3(vec2(fi, 5.0), vec2(64.0), 131.0);
+    int k = i < 13 ? 0 : (i < 22 ? 1 : 2);
+    float n = k == 0 ? 13.0 : 9.0, j = k == 0 ? fi : (k == 1 ? fi - 13.0 : fi - 22.0);
+    vec2 ba = k == 0 ? b0 : (k == 1 ? b1 : b2), en = k == 0 ? e0 : (k == 1 ? e1 : e2);
+    float sgn = mod(j, 2.0) < 0.5 ? 1.0 : -1.0;
+    float s2 = (j + 0.8) / n; bool tip = j > n - 1.5;
+    vec2 dir = normalize(en - ba); float ta = atan(dir.y, dir.x);
+    vec2 p0 = mix(ba, en, tip ? 1.0 : s2);
+    float la = tip ? ta + (rn.x - 0.5) * 0.3 : ta + sgn * (1.05 - 0.45 * s2) + (rn.x - 0.5) * 0.35;
+    float L = (0.2 + 0.07 * rn.y) * (1.0 - 0.38 * s2) * (k == 0 ? 1.0 : 0.82);
+    vec3 lf = leafAt(uv, p0, la, L, L * (0.27 + 0.06 * rn.z));
+    if (lf.x > 0.01){
+      float tone = 0.66 + 0.34 * rn.z;
+      vec3 lc = vec3(tone * (0.9 + 0.16 * rn.x), tone, tone * (0.72 + 0.26 * rn.y));
+      lc *= 0.86 + 0.14 * lf.y;                                              // 叶根略深
+      lc *= 1.0 + 0.16 * smoothstep(0.1, 0.0, abs(lf.z));                    // 主脉
+      lc *= 1.0 - 0.1 * smoothstep(0.75, 0.55, abs(fract(lf.y * 6.0 + abs(lf.z) * 1.6) - 0.5) * 2.0) * step(0.12, abs(lf.z));   // 侧脉
+      col = mix(col, lc, lf.x); mask = max(mask, lf.x);
+    }
+  }
+  c = col; h = mask; r = 0.7; ao = 1.0;
+}` };
+// 针叶枝：羽状的一枝，主轴两侧一排排小枝，小枝上密生针叶
+KINDS.bough = { tile: 1, relief: 0, raw: true, glsl: `
+// 一根带针叶的小枝：返回 x 轮廓 y 明暗
+vec2 needles(vec2 uv, vec2 a, vec2 b, float nl){
+  vec2 ba = b - a; float L = length(ba); vec2 dir = ba / L; vec2 pa = uv - a;
+  float u = dot(pa, dir), d = abs(dot(pa, vec2(-dir.y, dir.x)));
+  if (u < -0.01 || u > L + nl * 0.6) return vec2(0.0);
+  float t = clamp(u / L, 0.0, 1.0);
+  float len = nl * (1.0 - 0.55 * t * t) * smoothstep(-0.01, 0.05, u);
+  float tip = u > L ? smoothstep(nl * 0.6, 0.0, u - L) : 1.0;
+  float st = abs(fract((u - d * 0.75) * 46.0) - 0.5) * 2.0;                // 斜向前的一根根针
+  float m = smoothstep(len, len * 0.55, d) * tip * smoothstep(0.95, 0.5, st);
+  float twig = smoothstep(0.007, 0.003, d) * step(0.0, u) * step(u, L);
+  return vec2(max(m, twig), mix(0.62 + 0.38 * st, 0.5, twig));
+}
+void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
+  vec2 b0 = vec2(0.5, 0.0), e0 = vec2(0.5, 0.9);
+  vec2 best = needles(uv, b0, e0, 0.06);
+  for (int k = 0; k < 8; k++){
+    float fk = float(k), s2 = 0.08 + fk * 0.105;
+    vec3 rn = hash3(vec2(fk, 2.0), vec2(32.0), 141.0);
+    vec2 p0 = mix(b0, e0, s2);
+    float L = (0.44 * (1.0 - s2 * 0.8) + 0.06) * (0.9 + 0.2 * rn.x);
+    for (int sd = 0; sd < 2; sd++){
+      float sg = sd == 0 ? -1.0 : 1.0;
+      float a = 1.5708 + sg * (0.95 - 0.22 * s2 + (rn.y - 0.5) * 0.16);
+      vec2 n2 = needles(uv, p0, p0 + vec2(cos(a), sin(a)) * L, 0.05 * (1.0 - 0.3 * s2));
+      if (n2.x > best.x) best = n2;
+    }
+  }
+  float fine = fbm(uv, vec2(40.0), 2, 143.0);
+  c = vec3(0.86, 1.0, 0.82) * best.y * (0.9 + 0.2 * fine); h = best.x; r = 0.7; ao = 1.0;
+  if (best.x < 0.02) c = vec3(0.6, 0.7, 0.56);
 }` };
 // 旧木板：竖排木板，顺纹、年轮、木节、干裂、风化发灰
 KINDS.wood = { tile: 1.3, relief: 0.022, glsl: `
@@ -496,9 +575,12 @@ const SURF_GENERIC = `
     vec3 gVN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
   #else
     vec3 gVN = normalize(vNormal);
-    #ifdef DOUBLE_SIDED
+    #if defined(DOUBLE_SIDED) && !defined(AT_NOFLIP)
       gVN *= gl_FrontFacing ? 1.0 : -1.0;
     #endif
+  #endif
+  #if defined(USE_ALPHATEST) && !defined(ALPHA_TO_COVERAGE)
+    if (diffuseColor.a < alphaTest) discard;        // 镂空的像素尽早丢掉，后面的光照就不用算了
   #endif
   vec3 gWN = inverseTransformDirection(gVN, viewMatrix);
   #ifdef AT_PLAIN
@@ -718,7 +800,7 @@ let matId = 0;
 export function surfMat(U, o = {}) {
   U = U || SHARED.U;
   const P = { ...o };
-  for (const k of ['kind', 'mapping', 'scale', 'bump', 'tex', 'macro', 'snow', 'wet', 'sway', 'grass', 'trans', 'terrain', 'plain', 'cut', 'lichen']) delete P[k];
+  for (const k of ['kind', 'mapping', 'scale', 'bump', 'tex', 'macro', 'snow', 'wet', 'sway', 'grass', 'trans', 'terrain', 'plain', 'cut', 'lichen', 'noflip']) delete P[k];
   const mat = new THREE.MeshStandardMaterial(P);
   const kind = o.kind || 'rock';
   const T = tex(kind);
@@ -742,6 +824,7 @@ export function surfMat(U, o = {}) {
     o.plain ? '#define AT_PLAIN' : '',
     o.cut ? '#define AT_CUT' : '',
     o.lichen ? '#define AT_LICHEN' : '',
+    o.noflip ? '#define AT_NOFLIP' : '',
   ].filter(Boolean).join('\n') + '\n';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, U, uni);
@@ -781,7 +864,7 @@ export function surfMat(U, o = {}) {
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>\n reflectedLight.indirectDiffuse *= atAO; reflectedLight.indirectSpecular *= atAO * atAO;`)
       .replace('#include <fog_fragment>', `#ifdef USE_FOG\n gl_FragColor.rgb = atFog(gl_FragColor.rgb);\n#endif`);
   };
-  const key = 'at' + [kind, mapping, o.terrain ? 't' : '', snow > 0 ? 's' : '', o.trans ? 'x' : '', o.sway || 0, o.grass ? 'g' : '', o.macro === 0 ? 'm' : '', o.plain ? 'p' : '', o.cut ? 'c' : '', o.lichen ? 'l' : '', QUAL.lite ? 'L' : 'H'].join('|');
+  const key = 'at' + [kind, mapping, o.terrain ? 't' : '', snow > 0 ? 's' : '', o.trans ? 'x' : '', o.sway || 0, o.grass ? 'g' : '', o.macro === 0 ? 'm' : '', o.plain ? 'p' : '', o.cut ? 'c' : '', o.lichen ? 'l' : '', o.noflip ? 'n' : '', QUAL.lite ? 'L' : 'H'].join('|');
   mat.customProgramCacheKey = () => key;
   mat.userData.atId = ++matId;
   return mat;
