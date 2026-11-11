@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { ROUTE, routeZ, segIndexAt, altToY, yToAlt, ROUTE_LENGTH, WORLD } from './data.js';
 import { makeNoise, hash2, mulberry32, clamp, smoothstep, lerp } from './noise.js';
-import { patchWeatherMaterial } from './materials.js';
+import { surfMat, QUAL } from './materials.js';
+import { merge, paint, crease, puff, displace, xf, rockGeo } from './geo.js';
 
 const N = makeNoise(20181026);
 const N2 = makeNoise(777);
@@ -209,7 +210,7 @@ const col3 = (a) => new THREE.Color(a[0], a[1], a[2]);
 const PAL = {
   spring: { forest: [0.17, 0.24, 0.1], forest2: [0.24, 0.26, 0.13], meadow: [0.32, 0.35, 0.16], meadow2: [0.26, 0.3, 0.13], dead: [0.3, 0.28, 0.2] },
   summer: { forest: [0.11, 0.21, 0.07], forest2: [0.17, 0.26, 0.09], meadow: [0.2, 0.32, 0.1], meadow2: [0.15, 0.27, 0.08], dead: [0.25, 0.26, 0.16] },
-  autumn: { forest: [0.2, 0.18, 0.09], forest2: [0.28, 0.2, 0.1], meadow: [0.42, 0.33, 0.14], meadow2: [0.33, 0.28, 0.12], dead: [0.32, 0.27, 0.19] },
+  autumn: { forest: [0.25, 0.19, 0.08], forest2: [0.36, 0.22, 0.09], meadow: [0.42, 0.33, 0.14], meadow2: [0.33, 0.28, 0.12], dead: [0.32, 0.27, 0.19] },
   winter: { forest: [0.21, 0.2, 0.17], forest2: [0.25, 0.23, 0.19], meadow: [0.36, 0.32, 0.25], meadow2: [0.3, 0.28, 0.22], dead: [0.3, 0.28, 0.24] },
 };
 const C = {
@@ -245,7 +246,6 @@ function colorAt(x, z, y, ny, out) {
   if (spk > 0) out.lerp(tmpC2.copy(C.rock).lerp(C.lichen, smoothstep(0.2, 0.9, n1) * 0.4), smoothstep(0.05, 0.55, spk) * 0.9);
   const steep = smoothstep(0.82, 0.6, ny);
   out.lerp(ny < 0.5 ? C.cliffDark : C.rock2, steep);
-  if (ti.ad < 2.2 && t !== 'stone' && t !== 'pillars' && x > -10) out.lerp(C.path, (1 - ti.ad / 2.2) * 0.7);
   if (alt > 3550 && ti.ad > 150) out.lerp(C.snow, smoothstep(0.75, 0.95, ny) * smoothstep(3550, 3800, alt) * 0.7);
   if (x < -5 || x > ROUTE_LENGTH - 30) out.lerp(P.meadow2, 0.4);
   // 溪流河床
@@ -256,52 +256,6 @@ function colorAt(x, z, y, ny, out) {
 }
 
 // ---------- 几何体资源 ----------
-function jitterGeo(geo, amt, seed, freq = 0) {
-  const r = mulberry32(seed);
-  const pos = geo.attributes.position;
-  const map = new Map();
-  for (let i = 0; i < pos.count; i++) {
-    const k = `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)},${pos.getZ(i).toFixed(3)}`;
-    if (!map.has(k)) map.set(k, [1 + (r() - 0.5) * amt, 1 + (r() - 0.5) * amt, 1 + (r() - 0.5) * amt]);
-    const j = map.get(k);
-    let x = pos.getX(i) * j[0], y = pos.getY(i) * j[1], z = pos.getZ(i) * j[2];
-    if (freq) { const n = N2.noise2(x * freq + seed, z * freq) * 0.18 + N2.noise2(y * freq * 1.7, x * freq) * 0.1; x *= 1 + n; y *= 1 + n; z *= 1 + n; }
-    pos.setXYZ(i, x, y, z);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-function colorGeo(geo, color, shadeFn) {
-  const n = geo.attributes.position.count;
-  const arr = new Float32Array(n * 3);
-  const c = new THREE.Color(), pos = geo.attributes.position;
-  for (let i = 0; i < n; i++) {
-    c.copy(color);
-    if (shadeFn) shadeFn(c, pos.getX(i), pos.getY(i), pos.getZ(i));
-    arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b;
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
-  return geo;
-}
-function mergeGeos(list) {
-  const geos = list.map(g => (g.index ? g.toNonIndexed() : g));
-  let total = 0; for (const g of geos) total += g.attributes.position.count;
-  const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3), col = new Float32Array(total * 3);
-  let o = 0;
-  for (const g of geos) {
-    pos.set(g.attributes.position.array, o * 3);
-    nor.set(g.attributes.normal.array, o * 3);
-    col.set(g.attributes.color.array, o * 3);
-    o += g.attributes.position.count;
-  }
-  const m = new THREE.BufferGeometry();
-  m.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  m.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-  m.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  m.computeBoundingSphere();
-  return m;
-}
-
 export const GEO = {};
 export const MAT = {};
 
@@ -315,191 +269,336 @@ const FOL = {
   rhodo: { spring: [0.1, 0.22, 0.09], summer: [0.1, 0.22, 0.09], autumn: [0.22, 0.2, 0.09], winter: [0.12, 0.18, 0.11] },
   shrub: { spring: [0.28, 0.4, 0.14], summer: [0.17, 0.32, 0.1], autumn: [0.62, 0.28, 0.1], winter: [0.3, 0.24, 0.17] },
 };
-const TRUNK = new THREE.Color(0.26, 0.17, 0.1), TRUNK_GREY = new THREE.Color(0.38, 0.34, 0.3);
+// 贴图本身带明暗，树干的底色要比以前亮一倍才是原来的深浅
+const TRUNK = new THREE.Color(0.36, 0.25, 0.15), TRUNK_GREY = new THREE.Color(0.52, 0.47, 0.42), BIRCH = new THREE.Color(1.5, 1.46, 1.38);
 
-export function initTerrainAssets(weatherUniforms) {
-  MAT.terrain = patchWeatherMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 }), weatherUniforms, { detail: true });
-  MAT.rock = patchWeatherMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, flatShading: true }), weatherUniforms, {});
-  MAT.tree = patchWeatherMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true }), weatherUniforms, { sway: 0.05 });
-  MAT.grass = patchWeatherMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }), weatherUniforms, { sway: 0.35, grass: true });
-  MAT.flower = patchWeatherMaterial(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide, emissive: 0x111111 }), weatherUniforms, { sway: 0.3, grass: true });
-  // 岩石：多频率扰动的花岗岩
-  GEO.rocks = [0, 1].map(s => {
-    const g = jitterGeo(new THREE.IcosahedronGeometry(1, 2), 0.35, 100 + s, 1.3);
-    g.translate(0, -0.15, 0);
-    const ng = g.toNonIndexed(); ng.computeVertexNormals();
-    return colorGeo(ng, new THREE.Color(1, 1, 1), (c, x, y) => { c.multiplyScalar(0.8 + y * 0.15 + N2.noise2(x * 3, y * 3) * 0.08); });
-  });
-  // 草
-  {
-    const g = new THREE.BufferGeometry();
-    const pos = [], col = [];
-    const r = mulberry32(77);
-    for (let k = 0; k < 7; k++) {
-      const a = r() * Math.PI * 2, ox = (r() - 0.5) * 0.35, oz = (r() - 0.5) * 0.35;
-      const w = 0.05 + r() * 0.04, h = 0.55 + r() * 0.5, lean = 0.15 + r() * 0.3;
-      const cx = Math.cos(a) * w, cz = Math.sin(a) * w;
-      const tx = ox + Math.cos(a + 1.57) * lean, tz = oz + Math.sin(a + 1.57) * lean;
-      pos.push(ox - cx, 0, oz - cz, ox + cx, 0, oz + cz, tx, h, tz);
-      col.push(0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 1, 1, 1);
-    }
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    g.computeVertexNormals();
-    const nor = g.attributes.normal; for (let i = 0; i < nor.count; i++) nor.setXYZ(i, 0, 1, 0);
-    GEO.grass = g;
-  }
-  // 野花：花瓣盘 + 花心 + 细茎
-  {
-    const parts = [];
-    const petals = new THREE.CircleGeometry(0.11, 6); petals.rotateX(-Math.PI / 2); petals.translate(0, 0.32, 0);
-    parts.push(colorGeo(petals, new THREE.Color(1, 1, 1), (c, x, y, z) => { const r = Math.hypot(x, z); if (r < 0.03) c.setRGB(1.6, 1.3, 0.2); }));
-    const petals2 = new THREE.CircleGeometry(0.08, 5); petals2.rotateX(-Math.PI / 2 + 0.5); petals2.translate(0.08, 0.22, 0.03);
-    parts.push(colorGeo(petals2, new THREE.Color(0.95, 0.95, 0.95)));
-    const stem = new THREE.CylinderGeometry(0.008, 0.01, 0.32, 3); stem.translate(0, 0.16, 0);
-    parts.push(colorGeo(stem, new THREE.Color(0.25, 0.5, 0.15)));
-    GEO.flower = mergeGeos(parts);
-  }
+export function initTerrainAssets(U) {
+  MAT.terrain = surfMat(U, { kind: 'ground', terrain: true, vertexColors: true, roughness: 1, metalness: 0 });
+  MAT.rock = surfMat(U, { kind: 'rock', vertexColors: true, roughness: 1, scale: 3.4, bump: 1.6, macro: 0.25, lichen: 1 });
+  MAT.bark = surfMat(U, { kind: 'bark', vertexColors: true, roughness: 1, scale: 1.0, bump: 1.3, sway: 0.05, snow: 0.5, macro: 0.2 });
+  // 近处的树冠：叶片之间镂空、双面（从叶缝里能看进树冠内部）；远处和轻量模式用实心的
+  MAT.leaf = surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4 });
+  MAT.leafHi = QUAL.lite ? MAT.leaf : surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4, cut: 0.3, side: THREE.DoubleSide });
+  MAT.tree = MAT.leaf;
+  MAT.grass = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.82, side: THREE.DoubleSide, sway: 0.35, grass: true, trans: 1.0, snow: 0.8 });
+  MAT.flower = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.6, side: THREE.DoubleSide, sway: 0.3, grass: true, trans: 0.8, emissive: 0x0a0a0a });
+  // 岩石：三种形状 × 两档细节。归一化成“半径 1、顶高 0.75”，和碰撞用的椭球对得上
+  GEO.rocks = [0, 1, 2].map(s => [2, 1].map(detail => {
+    const g = rockGeo(100 + s * 17, detail, { cuts: 11 + s * 2, rough: 0.2 + s * 0.04 });
+    const pos = g.attributes.position; let maxY = 0, rr = 0;
+    for (let i = 0; i < pos.count; i++) { maxY = Math.max(maxY, pos.getY(i)); rr += Math.hypot(pos.getX(i), pos.getZ(i)); }
+    rr /= pos.count; const kx = 0.78 / rr;
+    for (let i = 0; i < pos.count; i++) pos.setXYZ(i, pos.getX(i) * kx, pos.getY(i) * 0.75 / maxY, pos.getZ(i) * kx);
+    crease(g, 30);
+    g.computeBoundingSphere();
+    // 顶点色：贴地的一圈发暗（泥、潮气），顶上略亮
+    return paint(g, new THREE.Color(1, 1, 1), (c, x, y, z, nx, ny) => { c.multiplyScalar(0.62 + smoothstep(-0.25, 0.35, y) * 0.3 + Math.max(ny, 0) * 0.14); });
+  }));
+  buildGrassGeo();
 }
 
-// 每局开始时按季节生成树木几何
-export function buildVegetation(seasonKey) {
-  const sk = seasonKey;
-  const fc = (kind) => FOL[kind][sk] ? col3(FOL[kind][sk]) : null;
-  const leafShade = (amt) => (c, x, y, z) => { const v = 0.75 + (y % 1.0) * 0.1 + N2.noise2(x * 4 + y, z * 4) * amt; c.multiplyScalar(v); };
-  // 冷杉：一层层下垂的枝层
-  {
-    const parts = [colorGeo(new THREE.CylinderGeometry(0.1, 0.24, 3.2, 7).translate(0, 1.6, 0), TRUNK)];
-    const f = fc('fir');
-    const tiers = 7;
-    for (let k = 0; k < tiers; k++) {
-      const u = k / (tiers - 1);
-      const r = lerp(1.75, 0.32, Math.pow(u, 0.9)), h = lerp(1.35, 0.9, u);
-      const cone = jitterGeo(new THREE.ConeGeometry(r, h, 10, 2), 0.22, 300 + k);
-      const p = cone.attributes.position;
-      for (let i = 0; i < p.count; i++) { const y = p.getY(i); if (y < -h * 0.3) p.setY(i, y - 0.18 * Math.hypot(p.getX(i), p.getZ(i)) / r); }
-      cone.computeVertexNormals();
-      cone.translate(0, 1.4 + k * 0.72 + h / 2, 0); cone.rotateY(k * 0.9);
-      parts.push(colorGeo(cone, f.clone().multiplyScalar(0.85 + u * 0.35), leafShade(0.18)));
-    }
-    const tip = new THREE.ConeGeometry(0.15, 0.7, 6); tip.translate(0, 1.4 + tiers * 0.72 + 0.2, 0);
-    parts.push(colorGeo(tip, f.clone().multiplyScalar(1.2)));
-    GEO.fir = mergeGeos(parts);
-  }
-  // 太白红杉（落叶松）：稀疏通透
-  {
-    const parts = [colorGeo(new THREE.CylinderGeometry(0.07, 0.2, 7, 6).translate(0, 3.5, 0), TRUNK)];
-    const f = fc('larch');
-    const r0 = mulberry32(31);
-    for (let k = 0; k < 9; k++) {
-      const y = 1.6 + k * 0.62, rad = lerp(1.4, 0.25, k / 8);
-      for (let b = 0; b < 4; b++) {
-        const a = b / 4 * Math.PI * 2 + k * 0.7;
-        const br = new THREE.CylinderGeometry(0.02, 0.04, rad, 4); br.translate(0, rad / 2, 0); br.rotateZ(-1.25); br.rotateY(a); br.translate(0, y, 0);
-        parts.push(colorGeo(br, TRUNK));
-        if (f) {
-          const tuft = jitterGeo(new THREE.IcosahedronGeometry(0.34 + rad * 0.18, 0), 0.5, 400 + k * 4 + b);
-          tuft.scale(1.5, 0.5, 1); tuft.rotateY(a); tuft.translate(Math.cos(a) * rad * 0.7, y + 0.05 + (r0() - 0.5) * 0.15, -Math.sin(a) * rad * 0.7);
-          parts.push(colorGeo(tuft, f.clone().multiplyScalar(0.85 + r0() * 0.3), leafShade(0.15)));
+// ---- 草丛：一丛十来片弯弯的草叶，根部颜色深、叶尖亮 ----
+function buildGrassGeo() {
+  const mk = (blades, segs, seed) => {
+    const r = mulberry32(seed);
+    const pos = [], col = [], nor = [];
+    for (let k = 0; k < blades; k++) {
+      const a = r() * Math.PI * 2, rad = Math.sqrt(r()) * 0.34, pa = r() * 6.28, ox = Math.cos(pa) * rad, oz = Math.sin(pa) * rad;
+      const w = 0.022 + r() * 0.022, h = (0.3 + r() * 0.5) * (1.15 - rad * 1.2), lean = 0.08 + r() * 0.3 + rad * 0.5, la = (rad > 0.08 ? pa : a + 1.57) + (r() - 0.5) * 1.2;
+      const cx = Math.cos(a) * w, cz = Math.sin(a) * w, lx = Math.cos(la) * lean, lz = Math.sin(la) * lean;
+      const tone = 0.8 + r() * 0.4;
+      // 每片草叶：自下而上几段，越往上越窄、越往外弯
+      const ring = (t) => { const b = t * t; return [ox + lx * b, h * (t - 0.12 * b), oz + lz * b, 1 - t * 0.82]; };
+      const nx = Math.cos(la) * 0.35, nz = Math.sin(la) * 0.35;
+      const push = (x, y, z, t) => { pos.push(x, y, z); const c = (0.34 + 0.66 * t) * tone; col.push(c * (1 - 0.1 * t), c, c * (0.9 - 0.25 * t)); const nl = Math.hypot(nx, 1, nz); nor.push(nx / nl, 1 / nl, nz / nl); };
+      for (let s = 0; s < segs; s++) {
+        const t0 = s / segs, t1 = (s + 1) / segs;
+        const [x0, y0, z0, k0] = ring(t0), [x1, y1, z1, k1] = ring(t1);
+        if (s === segs - 1) {
+          push(x0 - cx * k0, y0, z0 - cz * k0, t0); push(x0 + cx * k0, y0, z0 + cz * k0, t0); push(x1, y1, z1, t1);
+        } else {
+          push(x0 - cx * k0, y0, z0 - cz * k0, t0); push(x0 + cx * k0, y0, z0 + cz * k0, t0); push(x1 + cx * k1, y1, z1 + cz * k1, t1);
+          push(x0 - cx * k0, y0, z0 - cz * k0, t0); push(x1 + cx * k1, y1, z1 + cz * k1, t1); push(x1 - cx * k1, y1, z1 - cz * k1, t1);
         }
       }
     }
-    GEO.larch = mergeGeos(parts);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.computeBoundingSphere();
+    return g;
+  };
+  // 脚下这一块用密的草丛，周围八块用稀一半的（三角面数差一倍多，远看分不出来）
+  GEO.grassLo = mk(9, 2, 77);
+  GEO.grass = QUAL.grassHi ? mk(18, 2, 77) : GEO.grassLo;
+  // 野花：五片花瓣 + 花心 + 细茎 + 两片小叶
+  const parts = [];
+  const petalC = new THREE.Color(1, 1, 1);
+  for (let k = 0; k < 5; k++) {
+    const a = k / 5 * Math.PI * 2;
+    const p = new THREE.CircleGeometry(0.055, 5); p.scale(1, 1.5, 1); p.translate(0, 0.07, 0);
+    p.rotateX(-Math.PI / 2 + 0.45); p.rotateY(a); p.translate(0, 0.34, 0);
+    parts.push(paint(p, petalC, (c, x, y, z) => { const rr = Math.hypot(x, z); c.multiplyScalar(0.8 + rr * 2.2); }));
   }
-  // 白桦：白色树皮带黑纹
+  const core = new THREE.SphereGeometry(0.03, 6, 4); core.scale(1, 0.6, 1); core.translate(0, 0.345, 0);
+  parts.push(paint(core, new THREE.Color(1.7, 1.3, 0.15)));
+  const stem = new THREE.CylinderGeometry(0.006, 0.009, 0.34, 4); stem.translate(0, 0.17, 0);
+  parts.push(paint(stem, new THREE.Color(0.22, 0.45, 0.13)));
+  for (const s of [-1, 1]) { const lf = new THREE.CircleGeometry(0.05, 4); lf.scale(0.5, 1.6, 1); lf.rotateX(-1.0); lf.rotateY(s * 1.4 + 0.5); lf.translate(s * 0.03, 0.1, 0); parts.push(paint(lf, new THREE.Color(0.2, 0.42, 0.12))); }
+  const fl = merge(parts); fl.scale(0.55, 0.62, 0.55);
+  const fn = fl.attributes.normal; for (let i = 0; i < fn.count; i++) fn.setXYZ(i, 0, 1, 0);
+  GEO.flower = fl;
+}
+
+// ---- 树的零件 ----
+// 树干：下粗上细、根部外撇、略带弯曲。返回带顶点色的几何体
+function trunkGeo(h, r0, r1, color, { seg = 8, rings = 6, bend = 0.12, seed = 1, flare = 0.55, shade = null } = {}) {
+  const r = mulberry32(seed);
+  const bx = (r() - 0.5) * 2, bz = (r() - 0.5) * 2, ph = r() * 6.28;
+  const pos = [], idx = [];
+  for (let i = 0; i <= rings; i++) {
+    const t = Math.pow(i / rings, 1.25), y = h * t;
+    const rad = (r0 + (r1 - r0) * t) * (1 + flare * Math.exp(-t * 16));
+    const ox = bend * bx * Math.sin(t * 2.2 + ph) * h * 0.1 * t, oz = bend * bz * Math.sin(t * 1.7 + ph * 1.3) * h * 0.1 * t;
+    for (let j = 0; j <= seg; j++) {
+      const a = j / seg * Math.PI * 2;
+      const k = 1 + 0.12 * Math.sin(a * 3 + ph + t * 3) * (1 - t);
+      pos.push(ox + Math.cos(a) * rad * k, y, oz + Math.sin(a) * rad * k);
+    }
+  }
+  for (let i = 0; i < rings; i++) for (let j = 0; j < seg; j++) {
+    const a = i * (seg + 1) + j, b = a + 1, c = a + seg + 1, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  // 接缝处两列顶点法线对齐
+  const nor = g.attributes.normal;
+  for (let i = 0; i <= rings; i++) { const a = i * (seg + 1), b = a + seg; const x = nor.getX(a) + nor.getX(b), y = nor.getY(a) + nor.getY(b), z = nor.getZ(a) + nor.getZ(b), l = Math.hypot(x, y, z) || 1; nor.setXYZ(a, x / l, y / l, z / l); nor.setXYZ(b, x / l, y / l, z / l); }
+  const ng = g.toNonIndexed();
+  return paint(ng, color, (c, x, y, z) => { c.multiplyScalar(0.72 + smoothstep(0, h * 0.25, y) * 0.28); if (shade) shade(c, x, y, z); });
+}
+const _la = new THREE.Vector3(), _lb = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _lq = new THREE.Quaternion();
+// 一根枝条：从 a 到 b 的锥形圆管
+function limb(a, b, ra, rb, color, seg = 5) {
+  _la.set(a[0], a[1], a[2]); _lb.set(b[0], b[1], b[2]);
+  const len = _la.distanceTo(_lb);
+  const g = new THREE.CylinderGeometry(rb, ra, len, seg, 1, true); g.translate(0, len / 2, 0);
+  _lq.setFromUnitVectors(_up, _lb.clone().sub(_la).normalize());
+  g.applyQuaternion(_lq); g.translate(a[0], a[1], a[2]);
+  return paint(g.toNonIndexed(), color);
+}
+// 一团树叶：抖动过的球，法线向外鼓——受光像一整团蓬松的叶子；底部和朝里的一面压暗（自遮蔽）
+function blob(radius, detail, seed, color, { jit = 0.3, s = [1, 1, 1], p = [0, 0, 0], k = 0.45, dark = 0.38 } = {}) {
+  const r = mulberry32(seed);
+  const g = new THREE.IcosahedronGeometry(radius, detail);
+  displace(g, (v) => { const m = 1 + (r() - 0.5) * jit * 2; v.multiplyScalar(m); });
+  g.scale(s[0], s[1], s[2]);
+  const sm = crease(g, 80);
+  puff(sm, 0, -radius * s[1] * 0.4, 0, k);
+  sm.translate(p[0], p[1], p[2]);
+  const tone = 0.76 + r() * 0.44, hue = r();
+  const cc = color.clone(); cc.r *= 0.9 + hue * 0.22; cc.g *= 0.96 + (1 - hue) * 0.1; cc.b *= 1.1 - hue * 0.22;
+  return paint(sm, cc, (c, x, y, z, nx, ny) => {
+    const up = ny * 0.5 + 0.5;                       // 朝天的面亮，朝地的面暗
+    c.multiplyScalar(tone * (dark + (1 - dark) * up * up) * (0.9 + 0.2 * ((Math.sin(x * 9.1 + z * 7.3 + y * 5.7) + 1) * 0.5)));
+  });
+}
+// 冷杉的一层枝：伞状、边缘分瓣下垂，下表面是深色的
+function skirt(R, h, droop, lobes, seg, seed, color, y0) {
+  const r = mulberry32(seed), ph = r() * 6.28;
+  const prof = [[0.1, h, 1.05], [0.5, h * 0.52, 1.0], [0.82, h * 0.2, 0.92], [1.0, -droop, 0.8], [0.52, -droop * 0.25 - 0.02, 0.3], [0.1, h * 0.12, 0.22]];
+  const pos = [], shade = [], idx = [];
+  const jit = []; for (let j = 0; j < seg; j++) jit.push(0.85 + r() * 0.3);
+  prof.forEach(([pr, py, sh], i) => {
+    for (let j = 0; j <= seg; j++) {
+      const a = j / seg * Math.PI * 2;
+      const lobe = (0.76 + 0.24 * Math.cos(lobes * a + ph)) * jit[j % seg];
+      const k = i === 3 ? lobe : i === 2 ? 0.5 + 0.5 * lobe : i === 4 ? 0.7 + 0.3 * lobe : 1;
+      const rad = R * pr * k;
+      pos.push(Math.cos(a) * rad, y0 + py - (i === 3 ? droop * (lobe - 0.76) * 1.5 : 0), Math.sin(a) * rad);
+      shade.push(sh);
+    }
+  });
+  for (let i = 0; i < prof.length - 1; i++) for (let j = 0; j < seg; j++) {
+    const a = i * (seg + 1) + j, b = a + 1, c = a + seg + 1, d = c + 1;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  const nor = g.attributes.normal;
+  for (let i = 0; i < prof.length; i++) { const a = i * (seg + 1), b = a + seg; const x = nor.getX(a) + nor.getX(b), y = nor.getY(a) + nor.getY(b), z = nor.getZ(a) + nor.getZ(b), l = Math.hypot(x, y, z) || 1; nor.setXYZ(a, x / l, y / l, z / l); nor.setXYZ(b, x / l, y / l, z / l); }
+  const arr = new Float32Array(shade.length * 3);
+  const tone = 0.9 + r() * 0.25;
+  for (let i = 0; i < shade.length; i++) { const s = shade[i] * tone; arr[i * 3] = color.r * s; arr[i * 3 + 1] = color.g * s; arr[i * 3 + 2] = color.b * s; }
+  g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  return g.toNonIndexed();
+}
+
+// 每局开始时按季节生成树木几何。GEO[kind] = [近处精细版（树干、树叶两组材质）, 远处简化版（单材质）]
+export function buildVegetation(seasonKey) {
+  const sk = seasonKey;
+  for (const k of ['fir', 'larch', 'birch', 'maple', 'maple2', 'bonsai', 'rhodo', 'shrub', 'dead']) if (GEO[k]) for (const g of GEO[k]) g.dispose();
+  if (GEO.bloom) GEO.bloom.dispose();
+  const fc = (kind) => FOL[kind][sk] ? col3(FOL[kind][sk]).multiplyScalar(1.2) : null;   // 叶片贴图和明暗会压暗一些，这里补回来
+  const two = (bark, leaf, lo) => [merge(null, [bark, leaf]), merge(lo)];
+
+  // 冷杉：一层层下垂的枝层
   {
-    const bark = new THREE.Color(0.86, 0.84, 0.8);
-    const trunk = new THREE.CylinderGeometry(0.08, 0.14, 5.5, 8, 8); trunk.translate(0, 2.75, 0);
-    const parts = [colorGeo(trunk, bark, (c, x, y, z) => { const h = Math.sin(y * 7.3 + Math.atan2(z, x) * 2) * Math.sin(y * 3.1); if (h > 0.55) c.setRGB(0.12, 0.11, 0.1); })];
+    const f = fc('fir');
+    const bark = [trunkGeo(7.4, 0.22, 0.03, TRUNK, { seed: 11, bend: 0.05 })];
+    const leaf = [], lo = [trunkGeo(3, 0.2, 0.08, TRUNK, { seg: 5, rings: 2, seed: 11, bend: 0 })];
+    const tiers = 9;
+    for (let k = 0; k < tiers; k++) {
+      const u = k / (tiers - 1);
+      const R = lerp(1.95, 0.34, Math.pow(u, 0.85)), h = lerp(1.25, 0.8, u);
+      leaf.push(skirt(R, h, 0.32 * (1 - u * 0.5), 5 + (k % 3), 12, 300 + k, f.clone().multiplyScalar(0.86 + u * 0.34), 1.25 + k * 0.7));
+    }
+    leaf.push(paint(xf(new THREE.ConeGeometry(0.14, 0.75, 6), { p: [0, 7.72, 0] }).toNonIndexed(), f.clone().multiplyScalar(1.25)));
+    for (let k = 0; k < 4; k++) {
+      const u = k / 3;
+      lo.push(skirt(lerp(1.95, 0.5, u), lerp(2.3, 1.7, u), 0.3, 5, 7, 320 + k, f.clone().multiplyScalar(0.9 + u * 0.3), 1.3 + k * 1.6));
+    }
+    GEO.fir = two(bark, leaf, lo);
+  }
+  // 太白红杉（落叶松）：稀疏通透，一轮轮平伸的枝
+  {
+    const f = fc('larch');
+    const bark = [trunkGeo(7.6, 0.2, 0.03, TRUNK, { seed: 31, bend: 0.1 })];
+    const leaf = [], lo = [trunkGeo(7.4, 0.2, 0.04, TRUNK, { seg: 5, rings: 3, seed: 31, bend: 0.1 })];
+    const r0 = mulberry32(31);
+    for (let k = 0; k < 7; k++) {
+      const y = 1.7 + k * 0.8, rad = lerp(1.7, 0.4, k / 6);
+      for (let b = 0; b < 4; b++) {
+        const a = b / 4 * Math.PI * 2 + k * 0.9 + r0() * 0.4;
+        const ex = Math.cos(a) * rad, ez = Math.sin(a) * rad, ey = y + rad * 0.18 + (r0() - 0.5) * 0.1;
+        bark.push(limb([0, y, 0], [ex, ey, ez], 0.045, 0.012, TRUNK, 4));
+        if (f) for (let q = 0; q < 2; q++) {
+          const t = q ? 0.95 : 0.55, sz = (0.3 + rad * 0.2) * (q ? 0.8 : 1);
+          leaf.push(blob(sz, 1, 400 + k * 8 + b * 2 + q, f, { jit: 0.35, s: [1.5, 0.48, 1.15], p: [ex * t, lerp(y, ey, t) - 0.03, ez * t], dark: 0.62 }));
+        }
+      }
+      if (k % 2 === 0) {
+        const fl = f || TRUNK.clone().multiplyScalar(0.8);
+        for (let b = 0; b < 3; b++) { const a = b / 3 * 6.28 + k; lo.push(blob(rad * 0.62, 0, 430 + k * 3 + b, fl, { jit: 0.3, s: [1.3, f ? 0.45 : 0.12, 1.0], p: [Math.cos(a) * rad * 0.6, y + 0.1, Math.sin(a) * rad * 0.6], dark: 0.65 })); }
+      }
+    }
+    GEO.larch = two(bark, leaf, lo);
+  }
+  // 白桦：白树皮带黑色横纹
+  {
     const f = fc('birch');
+    const mark = (c, x, y, z) => { const hh = Math.sin(y * 7.3 + Math.atan2(z, x) * 2) * Math.sin(y * 3.1 + x * 9); if (hh > 0.5) c.setRGB(0.16, 0.15, 0.14); else if (y < 0.5) c.multiplyScalar(0.55); };
+    const bark = [trunkGeo(6.2, 0.15, 0.04, BIRCH, { seed: 41, bend: 0.25, rings: 9, seg: 8, flare: 0.3, shade: mark })];
+    const leaf = [], lo = [trunkGeo(4.6, 0.15, 0.07, BIRCH, { seg: 5, rings: 3, seed: 41, bend: 0.25, flare: 0.3 })];
     const r0 = mulberry32(41);
-    for (let b = 0; b < 4; b++) {
-      const br = new THREE.CylinderGeometry(0.025, 0.05, 1.6, 4); br.translate(0, 0.8, 0); br.rotateZ(0.7 + r0() * 0.3); br.rotateY(b * 1.6); br.translate(0, 3.2 + b * 0.5, 0);
-      parts.push(colorGeo(br, bark));
+    for (let b = 0; b < 5; b++) {
+      const a = b * 1.4 + r0(), y = 3.0 + b * 0.55, len = 1.5 - b * 0.12;
+      const e = [Math.cos(a) * len, y + len * 0.75, Math.sin(a) * len];
+      bark.push(limb([0, y, 0], e, 0.05, 0.015, BIRCH, 4));
+      if (f) {
+        leaf.push(blob(0.72 + r0() * 0.3, 1, 60 + b, f, { jit: 0.34, s: [1, 0.86, 1], p: e, dark: 0.55 }));
+        leaf.push(blob(0.5 + r0() * 0.2, 1, 70 + b, f.clone().multiplyScalar(1.1), { jit: 0.36, s: [1, 0.8, 1], p: [e[0] * 0.5 + (r0() - 0.5) * 0.5, e[1] + 0.5 + r0() * 0.4, e[2] * 0.5 + (r0() - 0.5) * 0.5], dark: 0.6 }));
+      } else {
+        for (let q = 0; q < 3; q++) { const a2 = a + (q - 1) * 0.7; bark.push(limb(e, [e[0] + Math.cos(a2) * 0.7, e[1] + 0.6 + q * 0.1, e[2] + Math.sin(a2) * 0.7], 0.014, 0.004, BIRCH, 3)); }
+      }
     }
-    if (f) for (let k = 0; k < 6; k++) {
-      const g = jitterGeo(new THREE.IcosahedronGeometry(0.85 + r0() * 0.4, 1), 0.35, 60 + k);
-      g.scale(1, 1.15, 1); g.translate((r0() - 0.5) * 1.8, 4.4 + r0() * 1.8, (r0() - 0.5) * 1.8);
-      parts.push(colorGeo(g, f.clone().multiplyScalar(0.85 + r0() * 0.3), leafShade(0.2)));
-    }
-    GEO.birch = mergeGeos(parts);
+    if (f) { lo.push(blob(1.5, 0, 66, f, { jit: 0.3, s: [1, 1.15, 1], p: [0.2, 5.3, 0.1] })); lo.push(blob(1.1, 0, 67, f.clone().multiplyScalar(1.1), { jit: 0.3, p: [-0.6, 4.4, 0.5] })); }
+    GEO.birch = two(bark, leaf, lo);
   }
-  // 槭树（秋天红/橙两种）
+  // 槭树（秋天红 / 橙两种）：粗干、三四根大杈、圆阔的树冠
   for (const kind of ['maple', 'maple2']) {
-    const parts = [colorGeo(new THREE.CylinderGeometry(0.14, 0.3, 3.4, 7).translate(0, 1.7, 0), TRUNK)];
-    const r0 = mulberry32(kind === 'maple' ? 17 : 23);
-    for (let b = 0; b < 3; b++) { const br = new THREE.CylinderGeometry(0.05, 0.1, 2, 5); br.translate(0, 1, 0); br.rotateZ(0.6); br.rotateY(b * 2.1); br.translate(0, 2.8, 0); parts.push(colorGeo(br, TRUNK)); }
     const f = fc(kind);
-    if (f) for (let k = 0; k < 7; k++) {
-      const g = jitterGeo(new THREE.IcosahedronGeometry(1.15 + r0() * 0.6, 1), 0.3, 80 + k + (kind === 'maple' ? 0 : 20));
-      g.translate((r0() - 0.5) * 2.6, 4.0 + r0() * 1.6, (r0() - 0.5) * 2.6);
-      parts.push(colorGeo(g, f.clone().multiplyScalar(0.8 + r0() * 0.35), leafShade(0.2)));
+    const sd = kind === 'maple' ? 17 : 23;
+    const r0 = mulberry32(sd);
+    const bark = [trunkGeo(3.3, 0.3, 0.16, TRUNK, { seed: sd, bend: 0.3, rings: 5, flare: 0.7 })];
+    const leaf = [], lo = [trunkGeo(3.2, 0.3, 0.14, TRUNK, { seg: 5, rings: 2, seed: sd, bend: 0.3 })];
+    for (let b = 0; b < 4; b++) {
+      const a = b * 1.6 + r0() * 0.5, len = 1.9 + r0() * 0.6;
+      const e = [Math.cos(a) * len * 0.75, 3.0 + len * 0.72, Math.sin(a) * len * 0.75];
+      bark.push(limb([0, 2.9, 0], e, 0.13, 0.04, TRUNK, 5));
+      if (f) {
+        leaf.push(blob(1.15 + r0() * 0.4, 1, 80 + b + sd, f, { jit: 0.3, s: [1.1, 0.82, 1.1], p: e, dark: 0.5 }));
+        leaf.push(blob(0.8 + r0() * 0.3, 1, 90 + b + sd, f.clone().multiplyScalar(0.9 + r0() * 0.3), { jit: 0.32, s: [1.1, 0.8, 1.1], p: [e[0] * 1.45, e[1] - 0.5 + r0() * 0.5, e[2] * 1.45], dark: 0.55 }));
+      } else {
+        for (let q = 0; q < 4; q++) { const a2 = a + (q - 1.5) * 0.6; const m = [e[0] + Math.cos(a2) * 0.9, e[1] + 0.5 + r0() * 0.5, e[2] + Math.sin(a2) * 0.9]; bark.push(limb(e, m, 0.035, 0.008, TRUNK, 3)); }
+      }
     }
-    GEO[kind] = mergeGeos(parts);
+    if (f) {
+      leaf.push(blob(1.3, 1, 99 + sd, f.clone().multiplyScalar(1.08), { jit: 0.3, s: [1.15, 0.78, 1.15], p: [0, 5.6, 0], dark: 0.6 }));
+      lo.push(blob(2.5, 1, 98 + sd, f, { jit: 0.26, s: [1.1, 0.72, 1.1], p: [0, 4.7, 0], dark: 0.5 }));
+    }
+    GEO[kind] = two(bark, leaf, lo);
   }
-  // 盆景园：虬曲矮冷杉，枝叶成平台状
+  // 盆景园：虬曲矮冷杉，枝叶成一层层平台
   {
-    const parts = [];
-    let p = new THREE.Vector3(0, 0, 0);
+    const f = fc('fir');
     const r0 = mulberry32(9);
-    for (let s = 0; s < 3; s++) {
-      const q = p.clone().add(new THREE.Vector3((r0() - 0.5) * 0.8, 0.8, (r0() - 0.5) * 0.8));
-      const len = p.distanceTo(q);
-      const c = new THREE.CylinderGeometry(0.12 - s * 0.03, 0.2 - s * 0.04, len, 6); c.translate(0, len / 2, 0);
-      const m = new THREE.Matrix4().lookAt(new THREE.Vector3(), q.clone().sub(p), new THREE.Vector3(0, 0, 1));
-      c.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize())));
-      c.translate(p.x, p.y, p.z);
-      parts.push(colorGeo(c, TRUNK_GREY));
+    const bark = [], leaf = [], lo = [];
+    let p = [0, 0, 0];
+    for (let s = 0; s < 4; s++) {
+      const q = [p[0] + (r0() - 0.5) * 0.9, p[1] + 0.62, p[2] + (r0() - 0.5) * 0.9];
+      bark.push(limb(p, q, 0.2 - s * 0.04, 0.16 - s * 0.04, TRUNK_GREY, 6));
+      if (s > 0) {
+        const a = r0() * 6.28, l = 0.9 + r0() * 0.5, e = [q[0] + Math.cos(a) * l, q[1] + 0.05, q[2] + Math.sin(a) * l];
+        bark.push(limb(q, e, 0.05, 0.02, TRUNK_GREY, 4));
+        leaf.push(blob(0.72 + r0() * 0.3, 1, 20 + s, f.clone().multiplyScalar(1.1 + r0() * 0.3), { jit: 0.34, s: [1.45, 0.3, 1.25], p: [e[0], e[1] + 0.12, e[2]], dark: 0.45 }));
+      }
       p = q;
     }
-    const f = fc('fir');
-    for (let k = 0; k < 5; k++) {
-      const g = jitterGeo(new THREE.IcosahedronGeometry(0.75 + r0() * 0.4, 1), 0.4, 20 + k);
-      g.scale(1.5, 0.38, 1.5); g.translate((r0() - 0.5) * 1.8, 1.0 + k * 0.35, (r0() - 0.5) * 1.8);
-      parts.push(colorGeo(g, f.clone().multiplyScalar(1.1 + r0() * 0.3), leafShade(0.2)));
-    }
-    GEO.bonsai = mergeGeos(parts);
+    leaf.push(blob(0.85, 1, 29, f.clone().multiplyScalar(1.3), { jit: 0.34, s: [1.4, 0.34, 1.4], p: [p[0], p[1] + 0.15, p[2]], dark: 0.45 }));
+    lo.push(limb([0, 0, 0], p, 0.2, 0.06, TRUNK_GREY, 4));
+    lo.push(blob(1.25, 0, 28, f.clone().multiplyScalar(1.2), { jit: 0.3, s: [1.4, 0.3, 1.4], p: [p[0], p[1] + 0.1, p[2]], dark: 0.5 }));
+    lo.push(blob(0.9, 0, 27, f.clone().multiplyScalar(1.1), { jit: 0.3, s: [1.3, 0.3, 1.3], p: [p[0] * 0.3 + 0.7, p[1] * 0.6, p[2] * 0.3 - 0.4], dark: 0.5 }));
+    GEO.bonsai = two(bark, leaf, lo);
   }
   // 杜鹃灌丛 + 花簇
   {
-    const parts = [colorGeo(new THREE.CylinderGeometry(0.05, 0.08, 0.6, 5).translate(0, 0.3, 0), TRUNK)];
     const f = fc('rhodo');
     const r0 = mulberry32(13);
-    const bloomPts = [];
-    for (let k = 0; k < 4; k++) {
-      const g = jitterGeo(new THREE.IcosahedronGeometry(0.55 + r0() * 0.25, 1), 0.35, 40 + k);
-      const ox = (r0() - 0.5) * 1.1, oz = (r0() - 0.5) * 1.1, oy = 0.6 + r0() * 0.3;
-      g.scale(1.2, 0.72, 1.2); g.translate(ox, oy, oz);
-      parts.push(colorGeo(g, f.clone().multiplyScalar(0.85 + r0() * 0.3), leafShade(0.15)));
-      for (let b = 0; b < 5; b++) { const a = r0() * 6.28, rr = r0() * 0.5; bloomPts.push([ox + Math.cos(a) * rr, oy + 0.32 + r0() * 0.1, oz + Math.sin(a) * rr]); }
+    const bark = [], leaf = [], lo = [], bloomPts = [];
+    for (let k = 0; k < 5; k++) {
+      const ox = (r0() - 0.5) * 1.2, oz = (r0() - 0.5) * 1.2, oy = 0.5 + r0() * 0.34, rad = 0.5 + r0() * 0.25;
+      bark.push(limb([ox * 0.2, 0, oz * 0.2], [ox, oy - 0.1, oz], 0.04, 0.02, TRUNK, 4));
+      leaf.push(blob(rad, 1, 40 + k, f.clone().multiplyScalar(0.9 + r0() * 0.3), { jit: 0.36, s: [1.2, 0.72, 1.2], p: [ox, oy, oz], dark: 0.5 }));
+      for (let b = 0; b < 5; b++) { const a = r0() * 6.28, rr = r0() * rad * 0.9; bloomPts.push([ox + Math.cos(a) * rr, oy + rad * 0.55 * Math.sqrt(Math.max(0, 1 - (rr / (rad * 1.2)) ** 2)) + 0.03, oz + Math.sin(a) * rr]); }
     }
-    GEO.rhodo = mergeGeos(parts);
-    const bl = bloomPts.map(([x, y, z], i) => { const s = new THREE.IcosahedronGeometry(0.11 + (i % 3) * 0.02, 0); s.translate(x, y, z); return colorGeo(s, new THREE.Color(1, 1, 1), (c, px, py) => c.multiplyScalar(py > y ? 1.1 : 0.85)); });
-    GEO.bloom = mergeGeos(bl);
+    lo.push(blob(1.0, 0, 46, f, { jit: 0.3, s: [1.3, 0.62, 1.3], p: [0, 0.55, 0], dark: 0.5 }));
+    GEO.rhodo = two(bark, leaf, lo);
+    const bl = bloomPts.map(([x, y, z], i) => paint(xf(crease(new THREE.IcosahedronGeometry(0.1 + (i % 3) * 0.02, 0), 80), { p: [x, y, z], s: [1, 0.7, 1] }), new THREE.Color(1, 1, 1), (c, px, py) => c.multiplyScalar(py > y ? 1.15 : 0.8)));
+    GEO.bloom = merge(bl);
   }
   // 灌木 / 箭竹
   {
-    const r0 = mulberry32(53);
-    const parts = [];
     const f = fc('shrub');
-    for (let k = 0; k < 3; k++) {
-      const g = jitterGeo(new THREE.IcosahedronGeometry(0.55 + r0() * 0.3, 1), 0.5, 40 + k);
-      g.scale(1, 0.75, 1); g.translate((r0() - 0.5) * 0.9, 0.38, (r0() - 0.5) * 0.9);
-      parts.push(colorGeo(g, f.clone().multiplyScalar(0.85 + r0() * 0.3), leafShade(0.2)));
+    const r0 = mulberry32(53);
+    const bark = [], leaf = [], lo = [];
+    for (let k = 0; k < 4; k++) {
+      const ox = (r0() - 0.5) * 1.0, oz = (r0() - 0.5) * 1.0;
+      bark.push(limb([ox * 0.3, 0, oz * 0.3], [ox, 0.35, oz], 0.03, 0.015, TRUNK, 3));
+      leaf.push(blob(0.48 + r0() * 0.28, 1, 40 + k, f.clone().multiplyScalar(0.88 + r0() * 0.3), { jit: 0.45, s: [1, 0.78, 1], p: [ox, 0.42 + r0() * 0.15, oz], dark: 0.5 }));
     }
-    GEO.shrub = mergeGeos(parts);
+    lo.push(blob(0.9, 0, 48, f, { jit: 0.4, s: [1.1, 0.7, 1.1], p: [0, 0.45, 0], dark: 0.5 }));
+    GEO.shrub = two(bark, leaf, lo);
   }
-  // 火烧坡枯树
+  // 火烧坡枯树：烧黑的树桩、风化发白的树干、折断的枝
   {
-    const dc = new THREE.Color(0.5, 0.48, 0.45);
-    const parts = [colorGeo(new THREE.CylinderGeometry(0.08, 0.22, 7, 6).translate(0, 3.5, 0), dc, (c, x, y) => { if (y < 1.2) c.multiplyScalar(0.35); })];
+    const dc = new THREE.Color(0.86, 0.82, 0.76);
+    const char = (c, x, y) => { if (y < 1.4) c.multiplyScalar(lerp(0.22, 1, smoothstep(0.5, 1.4, y))); };
     const r = mulberry32(5);
-    for (let k = 0; k < 6; k++) {
-      const b = new THREE.CylinderGeometry(0.025, 0.06, 1.3 + r(), 4);
-      b.translate(0, 0.65, 0); b.rotateZ(0.9 + r() * 0.5); b.rotateY(r() * 6.28); b.translate(0, 2 + k * 0.75, 0);
-      parts.push(colorGeo(b, dc));
+    const bark = [trunkGeo(6.8, 0.22, 0.05, dc, { seed: 5, bend: 0.3, rings: 7, flare: 0.5, shade: char })];
+    const lo = [trunkGeo(6.8, 0.22, 0.05, dc, { seg: 5, rings: 3, seed: 5, bend: 0.3, shade: char })];
+    for (let k = 0; k < 7; k++) {
+      const a = r() * 6.28, y = 2 + k * 0.68, len = 0.7 + r() * 1.1;
+      const e = [Math.cos(a) * len, y + len * (0.2 + r() * 0.5), Math.sin(a) * len];
+      bark.push(limb([0, y, 0], e, 0.05, 0.012, dc, 4));
+      if (k % 2) bark.push(limb(e, [e[0] * 1.3, e[1] + 0.35, e[2] * 1.3 + 0.2], 0.012, 0.004, dc, 3));
+      if (k % 3 === 0) lo.push(limb([0, y, 0], e, 0.05, 0.012, dc, 3));
     }
-    GEO.dead = mergeGeos(parts);
+    GEO.dead = [merge(null, [bark, []]), merge(lo)];
   }
   VEG_SEASON = sk;
 }
@@ -571,7 +670,7 @@ function buildTerrainGeo(cx, cz, res) {
   const step = CHUNK / res;
   const vn = res + 3; // 含裙边
   const count = vn * vn;
-  const pos = new Float32Array(count * 3), nor = new Float32Array(count * 3), col = new Float32Array(count * 3);
+  const pos = new Float32Array(count * 3), nor = new Float32Array(count * 3), col = new Float32Array(count * 3), ter = new Float32Array(count * 3);
   const hgt = new Float32Array((res + 3) * (res + 3));
   // 先算高度（含外圈用于法线）
   for (let j = 0; j < vn; j++) for (let i = 0; i < vn; i++) {
@@ -592,6 +691,14 @@ function buildTerrainGeo(cx, cz, res) {
     nor[k] = nx; nor[k + 1] = ny; nor[k + 2] = nz;
     colorAt(x, z, y, ny, tmpC);
     col[k] = tmpC.r; col[k + 1] = tmpC.g; col[k + 2] = tmpC.b;
+    // 给着色器的分层信息：x 碎石覆盖度  y 离路迹中线的横向距离  z 这里有没有踩出来的小路
+    const ti = terrainInfo(x, z), tt = ti.type, alt = yToAlt(y);
+    let stone = tt === 'stone' || tt === 'pillars' ? 0.95 : tt === 'ridge' ? 0.42 : tt === 'cliff' ? 0.5 : tt === 'meadow' ? (alt > 3400 ? 0.3 : 0.12) : tt === 'dead' ? 0.2 : 0.05;
+    if (ti.ad > 260 + openAt(x) * 260) stone = alt > 3350 ? 0.6 : alt > 2900 ? 0.25 : 0.05;
+    stone = Math.max(stone, spireAt(x) * 0.95);
+    if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 3.4) stone = 1;      // 溪床全是卵石
+    ter[k] = stone; ter[k + 1] = clamp(ti.d, -60, 60);
+    ter[k + 2] = (tt !== 'stone' && tt !== 'pillars' && x > -10 && x < ROUTE_LENGTH + 30) ? 1 : 0.35;
   }
   const idx = new Uint32Array((vn - 1) * (vn - 1) * 6);
   let p = 0;
@@ -603,6 +710,7 @@ function buildTerrainGeo(cx, cz, res) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aTer', new THREE.BufferAttribute(ter, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeBoundingSphere();
   g.computeBoundingBox();
@@ -617,11 +725,23 @@ function slopeNY(x, z) {
 }
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
+const TREE_MATS = [null, null];
+// 近处用精细模型，远处换成简化模型（只换引用，不重建实例）
+function setChunkLod(chunk, lod) {
+  if (!chunk.objs || chunk.lod === lod) return;
+  chunk.lod = lod;
+  for (const o of chunk.objs.children) {
+    const L = o.userData.lods; if (!L) continue;
+    o.geometry = L[lod];
+    if (o.userData.tree) o.material = lod ? MAT.leaf : TREE_MATS;
+  }
+}
 
 function buildObjects(chunk) {
   const x0 = chunk.cx * CHUNK, z0 = chunk.cz * CHUNK;
   const rnd = mulberry32((chunk.cx * 73856093) ^ (chunk.cz * 19349663) ^ 0x5bd1e995);
   const group = new THREE.Group();
+  TREE_MATS[0] = MAT.bark; TREE_MATS[1] = MAT.leafHi;
   const rocks = [], trees = { fir: [], larch: [], birch: [], maple: [], maple2: [], bonsai: [], rhodo: [], shrub: [], dead: [] };
   const ccx = x0 + CHUNK / 2, ccz = z0 + CHUNK / 2;
   const tries = Math.abs(ccz - routeZ(ccx)) < 220 + openAt(ccx) * 260 ? 1400 : 450;
@@ -656,7 +776,7 @@ function buildObjects(chunk) {
       if (spk > 0.3 && ti.ad > 3.5 && r3 > 0.4) h = r * (1.5 + r3 * 2.6); // 尖峰上的花岗岩石牙（不挡在走线上）
       if (ti.ad < 1.5 && t !== 'stone' && t !== 'pillars') continue;
       const lich = rnd();
-      const rock = { x, z, y: y - r * 0.25, r: r * 1.0, h: h * 0.95, v: (r2 * 2) | 0, rot: rnd() * 6.28, c: 0.38 + rnd() * 0.2, l: lich < 0.2 ? 1 : lich < 0.28 ? 2 : 0 };
+      const rock = { x, z, y: y - r * 0.25, r: r * 1.0, h: h * 0.95, v: (r2 * 2.999) | 0, rot: rnd() * 6.28, c: 0.5 + rnd() * 0.24, l: lich < 0.2 ? 1 : lich < 0.28 ? 2 : 0 };
       rocks.push(rock);
       continue;
     }
@@ -682,18 +802,20 @@ function buildObjects(chunk) {
     }
   }
   // 岩石实例
-  const byV = [[], []];
+  const lod = chunk.lod = chunk.dist <= 1 ? 0 : 1;
+  const byV = [[], [], []];
   for (const r of rocks) byV[r.v].push(r);
   byV.forEach((list, v) => {
     if (!list.length) return;
-    const im = new THREE.InstancedMesh(GEO.rocks[v], MAT.rock, list.length);
+    const im = new THREE.InstancedMesh(GEO.rocks[v][lod], MAT.rock, list.length);
+    im.userData.lods = GEO.rocks[v];
     list.forEach((r, k) => {
       _q.setFromEuler(_e.set(0, r.rot, 0));
       _s.set(r.r, r.h / 0.85, r.r);
       _p.set(r.x, r.y + 0.12 * r.h, r.z);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(k, _m);
-      if (r.l === 1) tmpC2.setRGB(r.c * 1.02, r.c * 1.02, r.c * 0.78); else if (r.l === 2) tmpC2.setRGB(r.c * 1.15, r.c * 0.92, r.c * 0.7); else tmpC2.setRGB(r.c, r.c * 0.97, r.c * (0.9 + (k % 3) * 0.04));
+      if (r.l === 1) tmpC2.setRGB(r.c * 1.0, r.c * 1.0, r.c * 0.9); else if (r.l === 2) tmpC2.setRGB(r.c * 1.07, r.c * 0.97, r.c * 0.87); else tmpC2.setRGB(r.c, r.c * 0.985, r.c * (0.94 + (k % 3) * 0.02));
       im.setColorAt(k, tmpC2);
     });
     im.castShadow = true; im.receiveShadow = true;
@@ -705,7 +827,8 @@ function buildObjects(chunk) {
   for (const kind in trees) {
     const list = trees[kind];
     if (!list.length || !GEO[kind]) continue;
-    const im = new THREE.InstancedMesh(GEO[kind], MAT.tree, list.length);
+    const im = new THREE.InstancedMesh(GEO[kind][lod], lod ? MAT.leaf : TREE_MATS, list.length);
+    im.userData.lods = GEO[kind]; im.userData.tree = true;
     list.forEach((t, k) => {
       _q.setFromEuler(_e.set(0, t.rot, 0));
       _s.set(t.s, t.s * (0.85 + (t.rot % 0.3)), t.s);
@@ -741,7 +864,7 @@ function buildGrass(chunk) {
   const rnd = mulberry32((chunk.cx * 9176) ^ (chunk.cz * 3517) ^ 0x1234);
   const sk = WORLD.season;
   const list = [], flowers = [];
-  const want = sk === 'winter' ? 1600 : 4200;
+  const want = sk === 'winter' ? 2200 : (QUAL.lite ? 4200 : 6400);
   const fwant = FLOWER_DENSITY[sk];
   const fcols = FLOWER_COLORS[sk];
   for (let n = 0; n < want + fwant; n++) {
@@ -768,16 +891,18 @@ function buildGrass(chunk) {
   const c = new THREE.Color();
   const GT = GRASS_TINT[sk];
   if (list.length) {
-    const im = new THREE.InstancedMesh(GEO.grass, MAT.grass, list.length);
+    const im = new THREE.InstancedMesh(chunk.dist === 0 ? GEO.grass : GEO.grassLo, MAT.grass, list.length);
+    im.userData.grass = true;
     list.forEach((g, k) => {
       _q.setFromEuler(_e.set(0, g.rot, 0));
       const hs = sk === 'winter' ? 0.6 : 1;
-      _s.set(g.s * 1.6, g.s * (g.alt > 3300 ? 0.8 : 1.15) * hs, g.s * 1.6);
+      _s.set(g.s * 1.9, g.s * (g.alt > 3300 ? 0.72 : 1.05) * hs, g.s * 1.9);
       _p.set(g.x, g.y - 0.05, g.z);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(k, _m);
       const gold = smoothstep(2800, 3500, g.alt) * 0.6 + g.n * 0.4;
-      c.setRGB(lerp(GT[0][0], GT[1][0], gold) * 0.85, lerp(GT[0][1], GT[1][1], gold) * 0.85, lerp(GT[0][2], GT[1][2], gold) * 0.85);
+      const gv = 1.05 + (g.n - 0.5) * 0.3;
+      c.setRGB(lerp(GT[0][0], GT[1][0], gold) * gv, lerp(GT[0][1], GT[1][1], gold) * gv, lerp(GT[0][2], GT[1][2], gold) * gv);
       im.setColorAt(k, c);
     });
     im.receiveShadow = true; im.computeBoundingSphere(); group.add(im);
@@ -850,7 +975,9 @@ export class TerrainManager {
       const dist = Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz));
       if (dist > R + 1) { this.disposeChunk(c); this.chunks.delete(k); continue; }
       if (dist > 4 && c.objs) this.disposeObjs(c);
+      else if (c.objs) setChunkLod(c, dist <= 1 ? 0 : 1);
       if (dist > 2 && c.grassDone) { if (c.grass) this.disposeGroup(c.grass); c.grass = null; c.grassDone = false; }
+      else if (c.grass) { const gg = dist === 0 ? GEO.grass : GEO.grassLo; for (const o of c.grass.children) if (o.userData.grass && o.geometry !== gg) o.geometry = gg; }
     }
   }
   disposeObjs(c) {

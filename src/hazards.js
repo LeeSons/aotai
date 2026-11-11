@@ -1,6 +1,8 @@
 // ===================== 危险：羚牛 / 蛇 / 落石 / 阵风 / 雷击 / 失衡 / 湿滑结霜 / 蜱虫 / 幻觉 / 雾中怪事 =====================
 import * as THREE from 'three';
 import { heightAt, normalAt, terrainInfo, cliffSideAt } from './terrain.js';
+import { surfMat } from './materials.js';
+import { rockGeo } from './geo.js';
 import { ROUTE, routeZ, routeDZ, yToAlt, season } from './data.js';
 import { clamp, lerp, smoothstep } from './noise.js';
 
@@ -17,9 +19,10 @@ function vcolor(geo, fn) {
 }
 function takinModel() {
   const g = new THREE.Group();
-  const fur = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x2e2117, roughness: 0.95 });
-  const horn = new THREE.MeshStandardMaterial({ color: 0x1a1714, roughness: 0.45 });
+  // 毛：用草茎那张贴图当一绺绺的毛，贴图跟着身体走
+  const fur = surfMat(null, { kind: 'ground', mapping: 'local', scale: 0.55, bump: 1.6, tex: 0.75, vertexColors: true, roughness: 1, snow: 0.35 });
+  const dark = surfMat(null, { kind: 'ground', mapping: 'local', scale: 0.4, bump: 1.2, tex: 0.6, color: 0x3a2a1e, roughness: 1, snow: 0.3 });
+  const horn = surfMat(null, { kind: 'bark', mapping: 'local', scale: 0.25, bump: 0.8, tex: 0.5, color: 0x2a2520, roughness: 0.55, snow: 0 });
   const add = (geo, mat, parent, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m; };
   const gold = new THREE.Color(0.8, 0.64, 0.32), belly = new THREE.Color(0.42, 0.31, 0.17), brown = new THREE.Color(0.3, 0.21, 0.13);
   // 躯干：前高后低，肩部隆起
@@ -198,10 +201,12 @@ class Snake {
 }
 
 // ---------------- 落石 ----------------
+let RockMat = null;
 class RollingRock {
   constructor(scene, pos, vel, r) {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x5a5753, roughness: 0.9, flatShading: true });
-    this.mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 1), mat); this.mesh.castShadow = true;
+    const mat = RockMat || (RockMat = surfMat(null, { kind: 'rock', mapping: 'local', scale: 1.6, bump: 1.5, color: 0x8a8782, roughness: 1, snow: 0.3 }));
+    const geo = rockGeo(900 + ((r * 97) | 0), 1, { cuts: 12, rough: 0.2 }); geo.scale(r, r, r);
+    this.mesh = new THREE.Mesh(geo, mat); this.mesh.castShadow = true;
     scene.add(this.mesh);
     this.p = pos.clone(); this.v = vel.clone(); this.r = r; this.life = 9; this.hit = false;
   }

@@ -2,9 +2,11 @@
 import * as THREE from 'three';
 import { ROUTE, ROUTE_LENGTH, ITEMS, ITEM_USES, BACKPACKS, DIFFICULTY, GAME_MIN_PER_SEC, SEC_PER_GAME_HOUR, SHOP_STOCK, SEASONS, WORLD, routeZ, yToAlt, altToY, segIndexAt, moneyForWins, WIN_BONUS } from './data.js';
 import { mulberry32, clamp, lerp, smoothstep, makeNoise } from './noise.js';
-import { makeWeatherUniforms } from './materials.js';
+import { makeWeatherUniforms, bakeTextures, QUAL } from './materials.js';
+import { Post, installSoftShadows } from './post.js';
 import { TerrainManager, initTerrainAssets, buildVegetation, heightAt, groundAt, terrainInfo, profileY, edgeAt, openAt, STREAM } from './terrain.js';
-import { Sky, CloudSea, World, Glory, WATER_U } from './world.js';
+import { Sky, CloudSea, World, Glory, WATER_U, initWorldMats, hikerModel, campfireModel } from './world.js';
+import { FX } from './fx.js';
 import { Fauna } from './fauna.js';
 import { Weather } from './weather.js';
 import { Player, FLY_GEARS, FLY_GEAR0, RUN_GEARS, RUN_GEAR0, gearLabel, gearSpeed } from './player.js';
@@ -32,38 +34,6 @@ const CANOPY = { forest: 1, gully: 1, dead: 0.4 };
 const FUEL = { forest: 1, dead: 1.15, gully: 0.85, meadow: 0.3, ridge: 0.08, pillars: 0.06, stone: 0.03, cliff: 0.05 };
 const SOIL = { forest: 1, gully: 1, dead: 0.85, meadow: 0.6 };
 
-// ---------- 后期处理着色器 ----------
-const postVS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
-const postFS = `
-uniform sampler2D tDiffuse; uniform vec2 uRes; uniform float uTime;
-uniform float uBlur; uniform float uDesat; uniform float uCold; uniform float uAber; uniform float uPulse; uniform float uExposure; uniform float uGrain; uniform float uRed;
-varying vec2 vUv;
-void main(){
-  vec2 uv = vUv;
-  uv += vec2(sin(uv.y * 9.0 + uTime * 1.3), cos(uv.x * 7.0 + uTime * 1.1)) * 0.0022 * uAber;
-  vec3 col = texture2D(tDiffuse, uv).rgb;
-  if (uBlur > 0.01) {
-    vec3 acc = col; float r = uBlur * 7.0;
-    for (int i = 0; i < 8; i++) { float a = float(i) * 0.785398 + 0.3; acc += texture2D(tDiffuse, uv + vec2(cos(a), sin(a)) * r / uRes).rgb; }
-    for (int i = 0; i < 8; i++) { float a = float(i) * 0.785398; acc += texture2D(tDiffuse, uv + vec2(cos(a), sin(a)) * r * 2.2 / uRes).rgb; }
-    col = mix(col, acc / 17.0, clamp(uBlur * 1.5, 0.0, 1.0));
-  }
-  if (uAber > 0.01) {
-    col.r = mix(col.r, texture2D(tDiffuse, uv + vec2(uAber * 0.004, 0.0)).r, 0.8);
-    col.b = mix(col.b, texture2D(tDiffuse, uv - vec2(uAber * 0.004, 0.0)).b, 0.8);
-  }
-  col *= uExposure * (1.0 + uPulse);
-  float l = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(col, vec3(l), clamp(uDesat, 0.0, 1.0));
-  col = mix(col, col * vec3(0.8, 0.92, 1.15) + vec3(0.0, 0.01, 0.03) * l, clamp(uCold, 0.0, 1.0));
-  col = mix(col, col * vec3(1.25, 0.65, 0.62), clamp(uRed, 0.0, 1.0));
-  float g = fract(sin(dot(vUv * uRes + fract(uTime) * 91.7, vec2(12.9898, 78.233))) * 43758.5453);
-  col += (g - 0.5) * uGrain * (0.4 + l);
-  gl_FragColor = vec4(max(col, 0.0), 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-}`;
-
 const C = (r, g, b) => new THREE.Color(r, g, b);
 const SKY = {
   dayZ: C(0.13, 0.3, 0.68), dayH: C(0.55, 0.68, 0.85),
@@ -86,10 +56,10 @@ const NPC_LINES = [
 // ===================== 画质 =====================
 // 渲染倍率（相对屏幕的 CSS 像素，不超过设备像素比）在 min–max 之间按帧率自动调整
 const GFX = {
-  low:   { name: '流畅', desc: '帧率优先。分辨率最低、关闭抗锯齿，适合发热或较旧的手机', min: 0.6, max: 1.0, shadow: 1024, msaa: 0 },
-  mid:   { name: '均衡', desc: '清晰度和流畅度兼顾，卡顿时自动降低分辨率', min: 0.85, max: 1.5, start: 1.25, shadow: 1024, msaa: 2 },
-  high:  { name: '高清', desc: '更高的分辨率和阴影精度。帧率不够时仍会自动降一点', min: 0.75, max: 2.0, shadow: 2048, msaa: 4 },
-  ultra: { name: '极致', desc: '按屏幕原生分辨率渲染，不自动降低。最清晰也最耗电发热', min: 9, max: 3.0, shadow: 4096, msaa: 4 },
+  low:   { name: '流畅', desc: '帧率优先。分辨率最低、关闭抗锯齿和泛光，适合发热或较旧的手机', min: 0.6, max: 1.0, shadow: 1024, msaa: 0 },
+  mid:   { name: '均衡', desc: '清晰度和流畅度兼顾，有泛光和镜头光晕，卡顿时自动降低分辨率', min: 0.85, max: 1.5, start: 1.25, shadow: 1024, msaa: 2 },
+  high:  { name: '高清', desc: '全套光影：软阴影、环境光遮蔽、体积光（太阳光柱）、精细材质。帧率不够时会自动降一点分辨率', min: 0.75, max: 2.0, shadow: 2048, msaa: 4 },
+  ultra: { name: '极致', desc: '按屏幕原生分辨率渲染，不自动降低，光影采样也最密。最清晰也最耗电发热', min: 9, max: 3.0, shadow: 4096, msaa: 4 },
 };
 function loadGfx() {
   try { const k = localStorage.getItem('aotai_gfx'); if (GFX[k]) return k; } catch (e) { /* 无存储 */ }
@@ -100,6 +70,9 @@ function gfxRange(key) {
   const max = Math.min(dpr, L.max), min = Math.min(max, L.min);
   return { max, min, start: L.start ? clamp(L.start, min, max) : max };
 }
+
+// 阴影相机：以玩家为中心 ±SHADOW_HALF 米；光源在 300 米外
+const SHADOW_HALF = 64, SHADOW_NEAR = 60, SHADOW_FAR = 620;
 
 class Game {
   constructor() {
@@ -116,6 +89,15 @@ class Game {
     R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
     R.toneMapping = THREE.ACESFilmicToneMapping; R.toneMappingExposure = 1.0;
     R.outputColorSpace = THREE.SRGBColorSpace;
+    // 材质精度开局定档：手机和低两档用轻量版（单方向贴图投影、256 贴图、自带的阴影过滤）
+    QUAL.lite = IS_TOUCH || this.gfxKey === 'low' || this.gfxKey === 'mid';
+    QUAL.texSize = QUAL.lite ? 256 : 512;
+    QUAL.grassHi = !QUAL.lite;
+    this.liteAtBoot = QUAL.lite;
+    this.wxU = makeWeatherUniforms();
+    bakeTextures(R, this.wxU);
+    // 软阴影：影子离遮挡物越远越虚（阴影相机范围见下面 sun.shadow.camera）
+    if (!QUAL.lite) { if (installSoftShadows({ width: SHADOW_HALF * 2, height: SHADOW_HALF * 2, depth: SHADOW_FAR - SHADOW_NEAR }, { taps: this.gfxKey === 'ultra' ? 20 : 14, searchTaps: 8 })) R.shadowMap.type = THREE.PCFShadowMap; }
 
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x9fb0c0, 0.001);
@@ -123,29 +105,28 @@ class Game {
 
     // 后期
     const sz = R.getDrawingBufferSize(new THREE.Vector2());
-    this.rt = new THREE.WebGLRenderTarget(sz.x, sz.y, { type: THREE.HalfFloatType, samples: GFX[this.gfxKey].msaa });
-    this.postU = { tDiffuse: { value: this.rt.texture }, uRes: { value: sz.clone() }, uTime: { value: 0 }, uBlur: { value: 0 }, uDesat: { value: 0 }, uCold: { value: 0 }, uAber: { value: 0 }, uPulse: { value: 0 }, uExposure: { value: 1 }, uGrain: { value: 0.035 }, uRed: { value: 0 } };
-    this.postScene = new THREE.Scene();
-    this.postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ vertexShader: postVS, fragmentShader: postFS, uniforms: this.postU, depthTest: false, depthWrite: false })));
+    this.post = new Post(R, this.gfxKey, GFX[this.gfxKey].msaa);
+    this.post.setSize(sz.x, sz.y);
+    this.postU = this.post.u;
 
     // 光照
-    this.wxU = makeWeatherUniforms();
     initTerrainAssets(this.wxU);
     this.seasonKey = 'autumn'; WORLD.season = 'autumn';
     buildVegetation('autumn');
     this.sun = new THREE.DirectionalLight(0xffffff, 3);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.setScalar(GFX[this.gfxKey].shadow);
-    const sc = this.sun.shadow.camera; sc.left = -60; sc.right = 60; sc.top = 60; sc.bottom = -60; sc.near = 1; sc.far = 700;
-    this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.04;
+    const sc = this.sun.shadow.camera; sc.left = -SHADOW_HALF; sc.right = SHADOW_HALF; sc.top = SHADOW_HALF; sc.bottom = -SHADOW_HALF; sc.near = SHADOW_NEAR; sc.far = SHADOW_FAR;
+    this.sun.shadow.bias = QUAL.lite ? -0.0004 : -0.00016; this.sun.shadow.normalBias = 0.04; this.sun.shadow.radius = 1.25;
     this.scene.add(this.sun); this.scene.add(this.sun.target);
     this.hemi = new THREE.HemisphereLight(0xbfd4ff, 0x3a3020, 0.6); this.scene.add(this.hemi);
     this.flashLight = new THREE.AmbientLight(0xdde6ff, 0); this.scene.add(this.flashLight);
-    this.sky = new Sky(this.scene);
-    this.cloudSea = new CloudSea(this.scene);
-    this.cloudDeck = new CloudSea(this.scene);   // 飞到云顶以上时脚下的云层
+    initWorldMats(this.wxU);
+    this.sky = new Sky(this.scene, this.wxU);
+    this.cloudSea = new CloudSea(this.scene, this.wxU);
+    this.cloudDeck = new CloudSea(this.scene, this.wxU);   // 飞到云顶以上时脚下的云层
     this.glory = new Glory(this.scene);
+    this.fx = new FX(this.scene);
     this.fauna = new Fauna(this.scene);
     this.terrain = new TerrainManager(this.scene);
 
@@ -174,6 +155,7 @@ class Game {
     this.diff = DIFFICULTY.normal;
     this.weather = new Weather(this.scene, this.rng, this.diff);
     this.world = new World(this.scene, this.rng);
+    this.fx.setSmokes(this.world.smokes);
     this.titleX = ROUTE[4].x - 60;
 
     this.bindInput();
@@ -192,7 +174,7 @@ class Game {
     R.setSize(window.innerWidth, window.innerHeight);
     this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
     const sz = R.getDrawingBufferSize(new THREE.Vector2());
-    this.rt.setSize(sz.x, sz.y); this.postU.uRes.value.copy(sz);
+    this.post.setSize(sz.x, sz.y);
   }
 
   // ===================== 菜单 =====================
@@ -249,9 +231,10 @@ class Game {
     this.weather = new Weather(this.scene, this.rng, this.diff, this.seasonKey);
     this.weather.timeLeft = 2 * SEC_PER_GAME_HOUR;
     this.world = new World(this.scene, this.rng);
+    this.fx.setSmokes(this.world.smokes);
     this.hazards = new Hazards(this.scene, this.rng, this.diff);
     for (const n of this.world.npcs) {
-      const m = npcModel(n.ranger ? 0x2a4a7a : [0xd86a1c, 0x3a7a4a, 0x8a3a8a, 0x2a6aa0][(n.x | 0) % 4], n.ranger);
+      const m = hikerModel(n.ranger ? 0x2a4a7a : [0xd86a1c, 0x3a7a4a, 0x8a3a8a, 0x2a6aa0][(n.x | 0) % 4], n.ranger);
       m.position.set(n.x, heightAt(n.x, n.z), n.z);
       m.rotation.y = this.rng() * 6.28;
       this.scene.add(m); this.npcMeshes.push(m);
@@ -499,12 +482,8 @@ class Game {
       this.sun.shadow.mapSize.setScalar(L.shadow);
       if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; }
     }
-    if (this.rt.samples !== L.msaa) {
-      const old = this.rt;
-      this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: L.msaa });
-      this.postU.tDiffuse.value = this.rt.texture;
-      old.dispose();
-    }
+    this.post.setMsaa(L.msaa);
+    this.post.setTier(key);
     this.resize();
   }
 
@@ -547,7 +526,9 @@ class Game {
     const rows = Object.entries(GFX).map(([k, L]) => `<p${k === this.gfxKey ? ' style="color:#d8b46a"' : ''}><b>${L.name}</b>${k === this.gfxKey ? '（当前）' : ''}：${L.desc}</p>`).join('');
     const btns = Object.entries(GFX).map(([k, L]) => ({ label: (k === this.gfxKey ? '✓ ' : '') + L.name, cls: k === this.gfxKey ? 'on' : '', action: () => { this.setGfx(k); this.gfxMenu(back); } }));
     btns.push({ label: '完成', action: back });
-    this.ui.modal('画质', `${rows}<p class="muted">当前：${cur.name} · 渲染倍率 ${fmt(this.perf.pr, 2)}×（屏幕 ${fmt(dpr, 1)}×）。画面糊就往上调，发烫卡顿就往下调。设置会自动保存。</p>`, btns);
+    const liteNow = IS_TOUCH || this.gfxKey === 'low' || this.gfxKey === 'mid';
+    const note = liteNow !== this.liteAtBoot ? '<p style="color:#d8b46a">光影特效已经切换；材质精度、软阴影和草的密度要刷新页面后才会跟着换档。</p>' : '';
+    this.ui.modal('画质', `${rows}${note}<p class="muted">当前：${cur.name} · 渲染倍率 ${fmt(this.perf.pr, 2)}×（屏幕 ${fmt(dpr, 1)}×）。画面糊就往上调，发烫卡顿就往下调。设置会自动保存。</p>`, btns);
   }
 
   pauseMenu() {
@@ -758,11 +739,45 @@ class Game {
       lc = new THREE.Color(0.55, 0.65, 0.95);
     }
     this.sun.intensity = li; this.sun.color.copy(lc);
-    this.sun.position.copy(P).addScaledVector(ld, 300);
-    this.sun.target.position.copy(P);
+    // 太阳贴着地平线时光线几乎平行于地面，阴影图会在坡上打出一道道条纹：这时把影子淡掉（直射光本来也很弱了）
+    this.sun.shadow.intensity = smoothstep(0.012, 0.085, ld.y);
+    // 阴影相机按阴影图的像素对齐着走：人移动时影子边缘不会一格一格地爬
+    {
+      const q = this._shq || (this._shq = { m: new THREE.Matrix4(), inv: new THREE.Matrix4(), v: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), o: new THREE.Vector3() });
+      q.m.lookAt(ld, q.o, q.up); q.inv.copy(q.m).invert();
+      const tex = SHADOW_HALF * 2 / this.sun.shadow.mapSize.x;
+      q.v.copy(P).applyMatrix4(q.inv);
+      q.v.x = Math.round(q.v.x / tex) * tex; q.v.y = Math.round(q.v.y / tex) * tex;
+      q.v.applyMatrix4(q.m);
+      this.sun.position.copy(q.v).addScaledVector(ld, 300);
+      this.sun.target.position.copy(q.v);
+    }
+    // 材质共用的大气参数：主光方向、朝太阳看时雾里的暖光、谷底的霾、水洼涟漪
+    {
+      const WU = this.wxU, day = sy > -0.03;
+      WU.uSunDir.value.copy(ld);
+      const glowK = day ? smoothstep(-0.05, 0.1, sy) * lerp(0.2, 1, light) * (1 - cloud * 0.75) * (1 - fogK * 0.55) : 0.05 * (1 - cloud);
+      WU.uFogSun.value.copy(day ? U.uSunColor.value : lc).multiplyScalar(glowK * 0.5);
+      const baseY = profileY(clamp(P.x, 0, ROUTE_LENGTH));
+      WU.uHaze.value.set(baseY - 95, 0.011, 0.0009 * lerp(0.3, 1, dayK) * (1 - fogK) * (1 - hiK), 0);
+      WU.uRain.value = this.wxLocal && this.state === 'play' ? this.wxLocal.rain : 0;
+      const E = this.postEnv || (this.postEnv = {});
+      E.sun = this.sun; E.sunDir = sunDir; E.sunCol = U.uSunColor.value;
+      E.sunOn = smoothstep(-0.02, 0.07, sy) * Math.pow(1 - cloud, 1.5) * (1 - fogK);
+      E.fogD = this.scene.fog.density;
+      // 体积光：有太阳、空气里有点水汽时最明显；浓雾里太阳本身就弱了
+      E.vol = day ? smoothstep(-0.02, 0.12, sy) * (1 - cloud * 0.55) : 0.35;
+      this.post.tune.volSigma = 0.0011 + Math.min(this.scene.fog.density * 0.22, 0.006) + (day ? (1 - smoothstep(0.05, 0.45, sy)) * 0.0012 : 0);
+      // 自动曝光的范围：白天眼睛能适应明暗，夜里不许把黑夜提亮（黑就是黑，得开头灯）
+      E.autoRange = [lerp(0.92, 0.68, dayK), lerp(1.12, 1.55, dayK)];
+    }
     this.hemi.color.copy(z.clone().lerp(new THREE.Color(1, 1, 1), 0.3));
     this.hemi.groundColor.setRGB(0.22, 0.18, 0.12).multiplyScalar(lerp(0.1, 1, dayK));
     this.hemi.intensity = lerp(0.1, 1.0, dayK) * lerp(0.55, 1, light) + (1 - dayK) * 0.05;
+    // 天空拍成环境贴图后，环境光主要来自它；半球光只留一点地面的反光补底
+    const envOn = this.sky.updateEnv(this.renderer, this.postEnv && this.postEnv.dt || 0.016) || !!this.scene.environment;
+    if (envOn) { this.hemi.intensity *= 0.3; this.scene.environmentIntensity = 0.5; }
+    WATER_U.uRain.value = this.wxLocal && this.state === 'play' ? this.wxLocal.rain : 0;
     this.flashLight.intensity = this.weather.flash * 2.2;
     this.world && this.world.setNight(1 - dayK);
     // 云海
@@ -812,6 +827,9 @@ class Game {
       P.acc = 0; P.n = 0;
     }
     this.time += dt;
+    if (this.postEnv) this.postEnv.dt = raw;
+    this.postU.uTime.value = this.time;
+    this.postU.uFlash.value = this.weather ? this.weather.flash * 0.25 : 0;
     if (this.state === 'title') this.titleFrame(dt);
     else if (this.state === 'play') this.playFrame(dt);
     else if (this.state === 'dead' || this.state === 'end') this.endFrame(dt);
@@ -835,6 +853,7 @@ class Game {
     this.terrain.update(x, z, 3);
     this.updateLighting();
     this.world.update(dt, this.time, new THREE.Vector2(3, 1), this.camera.position);
+    this.updateParticles(dt);
     this.postU.uBlur.value = 0; this.postU.uDesat.value = 0; this.postU.uCold.value = 0; this.postU.uAber.value = 0; this.postU.uRed.value = 0; this.postU.uPulse.value = 0; this.postU.uExposure.value = 1;
     if (this.audio.ctx) { this.audio.env({ wind: 4, rain: 0, stream: 0, inside: 0 }); this.audio.update(dt, { heart: 0, breath: 0, forest: false, day: true, calm: 1 }); }
   }
@@ -985,8 +1004,38 @@ class Game {
     this.updateLighting();
     this.weather.updateVisuals(this.time % 600, this.camera.position, (this.windDirLocal || this.weather.windDir).clone().multiplyScalar(this.windLocal / 3), !!this.shelterNow && !this.shelterNow.weak, this.wxLocal);
     this.updateFX(dt);
+    this.updateParticles(dt);
     this.updateAudio(dt);
     ui.updateHUD(this);
+  }
+
+  // 环境粒子：林子里的落叶、阳光里的浮尘、风吹雪、夏夜的萤火虫、天冷时呵出的白气
+  updateParticles(dt) {
+    const pl = this.player, W = this.weather, cam = this.camera;
+    const E = this._fxE || (this._fxE = { wind: new THREE.Vector2(), light: new THREE.Color(), breath: { pos: new THREE.Vector3(), dir: new THREE.Vector3(), amount: 0 } });
+    const play = this.state === 'play';
+    const ti = this.ti || {}, alt = play ? (this.altitude || 0) : 3000, sy = this.sunDir ? this.sunDir.y : 1;
+    const dayK = smoothstep(-0.05, 0.15, sy), cloud = W.p.cloud, fogK = this.fogK || 0, rain = play && this.wxLocal ? this.wxLocal.rain : 0;
+    const forest = !play ? 0 : ti.type === 'forest' || ti.type === 'gully' ? 1 : ti.type === 'dead' ? 0.3 : 0;
+    const sk = this.seasonKey, windL = this.windLocal || 0;
+    E.time = this.time; E.dt = dt; E.cam = cam.position; E.season = sk;
+    E.px = this.post.h * 0.5 * cam.projectionMatrix.elements[5];
+    E.feetY = play ? pl.pos.y : cam.position.y - 3;
+    E.wind.copy(this.windDirLocal || W.windDir).multiplyScalar(Math.min(windL, 12) * 0.55);
+    E.leaves = forest * ({ autumn: 1, spring: 0.4, summer: 0.12, winter: 0 }[sk] || 0) * (1 - smoothstep(2700, 3100, alt)) * (0.35 + Math.min(1, windL / 7) * 0.65) * (1 - rain * 0.7);
+    E.motes = dayK * (1 - cloud) * (1 - fogK) * (0.4 + forest * 0.6) * (1 - (this.aboveCloud || 0));
+    E.glow = 1.5 * dayK;
+    E.drift = play && (this.snowLocal || 0) > 0.25 && !pl.flying ? smoothstep(4.5, 9, windL) * Math.min(1, this.snowLocal * 1.5) : 0;
+    E.fireflies = sk === 'summer' && forest > 0.5 ? (1 - dayK) * (1 - smoothstep(2600, 3000, alt)) * (1 - rain) : 0;
+    E.sunCol = this.sky.uniforms.uSunColor.value;
+    E.light.copy(this.scene.fog.color).multiplyScalar(1.15);
+    const cold = play && !this.sleeping && !pl.hidden ? smoothstep(5, -6, this.airTemp ?? 10) * (1 - Math.min(1, (pl.speed3 || 0) / 30)) : 0;
+    E.breath.amount = cold;
+    if (cold > 0) {
+      if (pl.firstPerson) { cam.getWorldDirection(E.breath.dir); E.breath.pos.copy(cam.position).addScaledVector(E.breath.dir, 0.4); E.breath.pos.y -= 0.14; }
+      else { E.breath.dir.set(Math.sin(pl.yaw), 0, Math.cos(pl.yaw)); E.breath.pos.copy(pl.pos).addScaledVector(E.breath.dir, 0.2); E.breath.pos.y += pl.stance === 'prone' ? 0.3 : pl.stance === 'crouch' ? 1.05 : pl.sitting ? 1.0 : 1.6; }
+    }
+    this.fx.update(E);
   }
 
   updateGlory(dt) {
@@ -1009,6 +1058,8 @@ class Game {
       if (ev.type === 'step') {
         const surf = ev.rock ? 'rock' : this.snowLocal > 0.3 ? 'snow' : this.weather.wetGround > 0.5 ? 'wet' : 'grass';
         this.audio.step(surf, ev.speed * (ev.stance === 'stand' ? 1 : 0.5));
+        if (surf === 'snow') this.fx.step(pl.pos, 'snow', Math.max(ev.speed, 2.5));
+        else if (surf === 'grass' && ev.speed > 4.2 && this.weather.wetGround < 0.25 && !ev.rock) this.fx.step(pl.pos, 'dust', ev.speed);
         if (ev.pole && Math.random() < 0.6) this.audio.pole();
       } else if (ev.type === 'stomp') {
         this.audio.step(this.snowLocal > 0.3 ? 'snow' : 'grass', 5);
@@ -1325,26 +1376,20 @@ class Game {
 
   makeFire(x, y, z, hours) {
     this.clearFire();
-    const g = new THREE.Group();
-    const logM = new THREE.MeshStandardMaterial({ color: 0x3b2a1d, roughness: 1 });
-    for (let i = 0; i < 5; i++) {
-      const arm = new THREE.Group(); arm.rotation.y = i / 5 * Math.PI * 2;
-      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, 0.8, 6), logM);
-      log.position.set(0.2, 0.3, 0); log.rotation.z = 0.6; arm.add(log); g.add(arm);
-    }
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.8, 8, 1, true), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
-    const core = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 8, 1, true), new THREE.MeshBasicMaterial({ color: 0xffd060, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
-    flame.position.y = 0.42; core.position.y = 0.3;
+    const g = campfireModel();
     const light = new THREE.PointLight(0xff8a3a, 30, 18, 2); light.position.y = 0.9;
-    g.add(flame, core, light);
+    g.add(light);
     g.position.set(x, y, z);
     this.scene.add(g);
-    this.fire = { x, z, left: hours, mesh: g, flame, core, light, t: 0 };
+    this.fire = { x, z, left: hours, mesh: g, light, ember: g.userData.ember, t: 0 };
+    this.fx.setFire(g.position, 1);
   }
   clearFire() {
+    if (this.fx) this.fx.setFire(null, 0);
     if (!this.fire) return;
     this.scene.remove(this.fire.mesh);
-    this.fire.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this.fire.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); });      // 材质是共用的，不销毁
+    this.fire.ember.dispose();
     this.fire = null;
   }
   // 柴火燃烧：一抱柴约烧 2 小时；下雨下雪、风大都烧得更快，大雨可能直接把火浇灭
@@ -1363,8 +1408,8 @@ class Game {
     f.t += dt;
     const k = Math.min(1, f.left / 0.4);   // 快烧完时火变小
     const fl = 0.85 + Math.sin(f.t * 13) * 0.08 + Math.sin(f.t * 7.3) * 0.06 + Math.random() * 0.05;
-    f.flame.scale.set(k * (0.9 + 0.1 * fl), k * fl * 1.1, k * (0.9 + 0.1 * fl));
-    f.core.scale.setScalar(Math.max(0.05, k * fl));
+    this.fx.setFire(f.mesh.position, Math.max(0.12, k * fl));
+    f.ember.color.setRGB(2.6 * k * fl, 0.62 * k * fl, 0.1 * k * fl);
     f.light.intensity = 30 * k * fl;
   }
 
@@ -2053,33 +2098,9 @@ class Game {
   }
 
   render() {
-    const R = this.renderer;
     this.sky.mesh.position.copy(this.camera.position);
-    R.setRenderTarget(this.rt);
-    R.render(this.scene, this.camera);
-    R.setRenderTarget(null);
-    R.render(this.postScene, this.postCam);
+    this.post.render(this.scene, this.camera, this.postEnv || {});
   }
-}
-
-function npcModel(color, ranger) {
-  const g = new THREE.Group();
-  const jacket = new THREE.MeshStandardMaterial({ color, roughness: 0.8 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x2c3138, roughness: 0.9 });
-  const skin = new THREE.MeshStandardMaterial({ color: 0xc89878, roughness: 0.8 });
-  const add = (geo, mat, x, y, z, rx = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.x = rx; m.castShadow = true; g.add(m); return m; };
-  if (ranger) {
-    add(new THREE.BoxGeometry(0.5, 0.65, 0.3), jacket, 0, 1.3, 0);
-    add(new THREE.BoxGeometry(0.26, 0.28, 0.26), skin, 0, 1.8, 0);
-    add(new THREE.BoxGeometry(0.3, 0.1, 0.34), dark, 0, 1.98, 0.03);
-    add(new THREE.BoxGeometry(0.18, 0.95, 0.2), dark, -0.13, 0.48, 0); add(new THREE.BoxGeometry(0.18, 0.95, 0.2), dark, 0.13, 0.48, 0);
-  } else {
-    add(new THREE.BoxGeometry(0.5, 0.62, 0.3), jacket, 0, 0.75, 0);
-    add(new THREE.BoxGeometry(0.26, 0.28, 0.26), skin, 0, 1.25, 0);
-    add(new THREE.BoxGeometry(0.18, 0.2, 0.7), dark, -0.13, 0.32, 0.3); add(new THREE.BoxGeometry(0.18, 0.2, 0.7), dark, 0.13, 0.32, 0.3);
-    add(new THREE.BoxGeometry(0.46, 0.6, 0.3), new THREE.MeshStandardMaterial({ color: 0x334433 }), 0.6, 0.3, -0.3);
-  }
-  return g;
 }
 
 new Game();
