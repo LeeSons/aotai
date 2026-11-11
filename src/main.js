@@ -243,7 +243,7 @@ class Game {
     this.weather = new Weather(this.scene, this.rng, this.diff, this.seasonKey);
     this.weather.timeLeft = 2 * SEC_PER_GAME_HOUR;
     this.world = new World(this.scene, this.rng);
-    this.fx.setSmokes(this.world.smokes);
+    this.fx.setSmokes(this.world.smokes); this.fx.clearPrints();
     this.hazards = new Hazards(this.scene, this.rng, this.diff);
     for (const n of this.world.npcs) {
       const m = hikerModel(n.ranger ? 0x2a4a7a : [0xd86a1c, 0x3a7a4a, 0x8a3a8a, 0x2a6aa0][(n.x | 0) % 4], n.ranger);
@@ -1052,6 +1052,7 @@ class Game {
     E.fireflies = sk === 'summer' && forest > 0.5 ? (1 - dayK) * (1 - smoothstep(2600, 3000, alt)) * (1 - rain) : 0;
     E.sunCol = this.sky.uniforms.uSunColor.value;
     E.light.copy(this.scene.fog.color).multiplyScalar(1.15);
+    E.fogD = this.scene.fog.density;
     const cold = play && !this.sleeping && !pl.hidden ? smoothstep(5, -6, this.airTemp ?? 10) * (1 - Math.min(1, (pl.speed3 || 0) / 30)) : 0;
     E.breath.amount = cold;
     if (cold > 0) {
@@ -1081,8 +1082,14 @@ class Game {
       if (ev.type === 'step') {
         const surf = ev.rock ? 'rock' : this.snowLocal > 0.3 ? 'snow' : this.weather.wetGround > 0.5 ? 'wet' : 'grass';
         this.audio.step(surf, ev.speed * (ev.stance === 'stand' ? 1 : 0.5));
-        if (surf === 'snow') this.fx.step(pl.pos, 'snow', Math.max(ev.speed, 2.5));
-        else if (surf === 'grass' && ev.speed > 4.2 && this.weather.wetGround < 0.25 && !ev.rock) this.fx.step(pl.pos, 'dust', ev.speed);
+        // 走 / 跑时事件里带着落脚点：雪沫、扬尘和脚印都落在那只脚上
+        const fp = ev.x !== undefined ? (this._fp || (this._fp = new THREE.Vector3())).set(ev.x, ev.y, ev.z) : pl.pos;
+        if (surf === 'snow') this.fx.step(fp, 'snow', Math.max(ev.speed, 2.5));
+        else if (surf === 'grass' && ev.speed > 4.2 && this.weather.wetGround < 0.25 && !ev.rock) this.fx.step(fp, 'dust', ev.speed);
+        if (ev.x !== undefined && !ev.rock) {
+          if (surf === 'snow') this.fx.footprint(ev.x, ev.y, ev.z, ev.yaw, pl.groundN, ev.side, 'snow');
+          else if (this.weather.wetGround > 0.55 && SOIL[this.ti.type]) this.fx.footprint(ev.x, ev.y, ev.z, ev.yaw, pl.groundN, ev.side, 'mud');
+        }
         if (ev.pole && Math.random() < 0.6) this.audio.pole();
       } else if (ev.type === 'stomp') {
         this.audio.step(this.snowLocal > 0.3 ? 'snow' : 'grass', 5);

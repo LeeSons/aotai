@@ -170,6 +170,36 @@ void main(){
   gl_FragColor = vec4(vCol.rgb * a, a);
 }`;
 
+// ---------------------------------------------------------------- 脚印
+// 雪地、泥地上一步一个鞋印：贴在地面上的小面片，过一阵慢慢淡掉
+const FP_VS = `
+attribute float aFade; attribute vec4 aTint;
+uniform float uFogD;
+varying vec2 vUv; varying float vFade; varying vec4 vTint;
+void main(){
+  vUv = uv; vTint = aTint;
+  vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  float fd = -mv.z * uFogD;
+  vFade = aFade * smoothstep(75.0, 45.0, -mv.z) * exp(-fd * fd * 2.0);     // 远了、雾里就看不见了
+  gl_Position = vFade > 0.003 ? projectionMatrix * mv : vec4(2.0, 2.0, 2.0, 1.0);
+}`;
+const FP_FS = `
+varying vec2 vUv; varying float vFade; varying vec4 vTint;
+void main(){
+  // 鞋印的形状：前掌一块、脚跟一块，中间是足弓；里面有几道鞋底的横纹
+  vec2 p = vUv - vec2(0.5, 0.0);
+  float fore = 1.0 - length((p - vec2(0.0, 0.655)) / vec2(0.39, 0.285));
+  float heel = 1.0 - length((p - vec2(0.0, 0.205)) / vec2(0.30, 0.165));
+  float arch = 1.0 - length((p - vec2(0.035, 0.42)) / vec2(0.2, 0.2));
+  float d = max(max(fore, heel), arch);
+  float m = smoothstep(0.0, 0.2, d);
+  float tread = 0.76 + 0.24 * smoothstep(0.35, 0.65, abs(fract(vUv.y * 7.0) - 0.5) * 2.0);
+  // 坑里压暗（脚跟踩得更深），坑沿是被挤起来的一圈，略亮
+  float a = m * tread * (0.82 + 0.18 * smoothstep(0.5, 0.15, vUv.y)) * vFade;
+  float rim = smoothstep(-0.2, -0.05, d) * (1.0 - smoothstep(-0.05, 0.05, d)) * vTint.a * vFade;
+  gl_FragColor = vec4(mix(vec3(1.0), vTint.rgb, a) * (1.0 + rim), 1.0);
+}`;
+
 const LEAF_COL = {
   spring: [[0.95, 0.75, 0.85], [1.0, 0.95, 0.95]],      // 春天飘的是花瓣
   summer: [[0.25, 0.42, 0.12], [0.4, 0.5, 0.15]],
@@ -216,7 +246,37 @@ export class FX {
     this.pool = []; for (let i = 0; i < M; i++) this.pool.push({ life: 0, max: 1, p: new THREE.Vector3(), v: new THREE.Vector3(), s0: 0.1, s1: 0.4, c: [1, 1, 1], a: 0.4 });
     this.poolI = 0; this.breathT = 0;
     this._w = new THREE.Vector3();
+    // 脚印
+    const FN = this.FN = 96;
+    const fg = new THREE.PlaneGeometry(0.17, 0.37); fg.rotateX(Math.PI / 2);      // 平放，贴图的“上”朝前
+    this.fpFade = new THREE.InstancedBufferAttribute(new Float32Array(FN), 1).setUsage(THREE.DynamicDrawUsage);
+    this.fpTint = new THREE.InstancedBufferAttribute(new Float32Array(FN * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    fg.setAttribute('aFade', this.fpFade); fg.setAttribute('aTint', this.fpTint);
+    // 相乘混合：脚印只是把底下的地面压暗一点，所以向阳处、阴影里、夜里都自然跟着地面走
+    this.fpU = { uFogD: { value: 0.001 } };
+    this.prints = new THREE.InstancedMesh(fg, new THREE.ShaderMaterial({ uniforms: this.fpU, vertexShader: FP_VS, fragmentShader: FP_FS, ...PREMULT, blendSrc: THREE.DstColorFactor, blendDst: THREE.ZeroFactor,
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }), FN);
+    this.prints.frustumCulled = false; this.prints.renderOrder = 3; this.prints.visible = false; scene.add(this.prints);
+    this.fpLife = new Float32Array(FN); this.fpMax = new Float32Array(FN); this.fpA = new Float32Array(FN); this.fpI = 0; this.fpAny = false;
+    this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion(); this._qy = new THREE.Quaternion(); this._up = new THREE.Vector3(0, 1, 0); this._s = new THREE.Vector3(1, 1, 1);
   }
+
+  // 留一个脚印。normal：地面法线；side：'L' / 'R'；kind：'snow' 雪地（发蓝的浅坑）/ 'mud' 泥地（深色的湿印）
+  footprint(x, y, z, yaw, normal, side, kind) {
+    const i = this.fpI; this.fpI = (this.fpI + 1) % this.FN;
+    this._qy.setFromAxisAngle(this._up, yaw + (side === 'L' ? -0.12 : 0.12));
+    if (normal) this._q.setFromUnitVectors(this._up, normal).multiply(this._qy); else this._q.copy(this._qy);
+    this._w.set(x, y + 0.025, z);
+    this._s.set(side === 'L' ? -1 : 1, 1, 1);
+    this._m.compose(this._w, this._q, this._s);
+    this.prints.setMatrixAt(i, this._m); this.prints.instanceMatrix.needsUpdate = true;
+    // 颜色是“乘到地面上”的倍数：雪坑发蓝发暗、坑沿略亮；泥印是一块深色的湿痕
+    const c = kind === 'snow' ? [0.5, 0.6, 0.8, 0.16] : [0.36, 0.31, 0.27, 0];
+    this.fpTint.setXYZW(i, c[0], c[1], c[2], c[3]); this.fpTint.needsUpdate = true;
+    this.fpMax[i] = this.fpLife[i] = kind === 'snow' ? 50 : 28; this.fpA[i] = 1;
+    this.fpAny = true;
+  }
+  clearPrints() { this.fpLife.fill(0); this.fpFade.array.fill(0); this.fpFade.needsUpdate = true; this.fpAny = false; this.prints.visible = false; }
 
   // 冒烟的固定地点（民居烟囱、寺庙香炉）
   setSmokes(list) {
@@ -292,9 +352,22 @@ export class FX {
       pos.needsUpdate = col.needsUpdate = sz.needsUpdate = true;
     }
     this.puffs.visible = any; this.puffU.uPx.value = e.px;
+    // 脚印慢慢淡掉
+    if (this.fpAny) {
+      let left = false;
+      for (let i = 0; i < this.FN; i++) {
+        if (this.fpLife[i] <= 0) continue;
+        this.fpLife[i] -= e.dt;
+        const k = Math.max(0, this.fpLife[i] / this.fpMax[i]);
+        this.fpFade.array[i] = this.fpA[i] * Math.min(1, k * 3.3);
+        if (this.fpLife[i] > 0) left = true;
+      }
+      this.fpFade.needsUpdate = true; this.fpAny = left; this.prints.visible = left;
+      this.fpU.uFogD.value = e.fogD || 0;
+    }
   }
 
   dispose() {
-    for (const o of [this.fire, this.amb, this.puffs, this.smoke]) if (o) { this.scene.remove(o); o.geometry.dispose(); }
+    for (const o of [this.fire, this.amb, this.puffs, this.smoke, this.prints]) if (o) { this.scene.remove(o); o.geometry.dispose(); }
   }
 }

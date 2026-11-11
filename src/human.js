@@ -54,6 +54,7 @@ const HEAD = [[-0.094, 0.02, 0.026, 0.02, 0, 0.036], [-0.078, 0.044, 0.05, 0.04,
 
 // 头：脸、五官、耳朵、头发
 function buildHead(M, head) {
+  const lids = [];
   const skinTint = (c, x, y, z) => {
     // 脸颊、鼻尖、耳朵冻得发红；眼窝略深
     const cheek = Math.exp(-((Math.abs(x) - 0.045) ** 2 / 0.0006 + (y + 0.005) ** 2 / 0.0008)) * (z > 0.03 ? 1 : 0);
@@ -73,6 +74,7 @@ function buildHead(M, head) {
     const w = mk(new THREE.SphereGeometry(0.0125, 12, 8), M.eyeWhite, head, ex, ey, ez); w.scale.set(1.22, 0.78, 0.62); w.castShadow = false;
     const iris = mk(new THREE.SphereGeometry(0.0074, 10, 8), M.eye, head, ex - s * 0.001, ey - 0.0006, ez + 0.0052); iris.scale.set(1, 1, 0.55); iris.castShadow = false;
     const lid = mk(paint(new THREE.SphereGeometry(0.0138, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.3), WHITE, (c) => c.multiplyScalar(0.9)), M.skin, head, ex, ey + 0.0008, ez); lid.scale.set(1.26, 0.86, 0.68); lid.rotation.x = 0.22; lid.castShadow = false;
+    lid.userData.keep = true; lids.push(lid);      // 眼睑单独留着：眨眼要转它
     const brow = mk(bevelBox(0.03, 0.0065, 0.008, 0.003), M.hair, head, s * 0.033, 0.0725, 0.083); brow.rotation.set(0.1, s * 0.32, -s * 0.12); brow.castShadow = false;
     // 耳朵
     const ear = mk(paint(new THREE.SphereGeometry(0.026, 10, 8), WHITE, (c) => c.setRGB(1.06, 0.88, 0.88)), M.skin, head, s * 0.0765, 0.034, -0.006); ear.scale.set(0.34, 1, 0.66); ear.rotation.set(0, -s * 0.35, s * 0.12);
@@ -82,6 +84,7 @@ function buildHead(M, head) {
   // 头发：头顶后脑一片 + 鬓角后颈一片
   const hairTop = mk(new THREE.SphereGeometry(0.092, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), M.hair, head, 0, 0.082, -0.013); hairTop.scale.set(0.87, 0.92, 1.12); hairTop.rotation.x = -0.24;
   const hairBack = mk(new THREE.SphereGeometry(0.085, 14, 10), M.hair, head, 0, 0.062, -0.04); hairBack.scale.set(0.91, 0.82, 0.8);
+  return lids;
 }
 
 // 毛线帽：翻边 + 罗纹帽身 + 绒球
@@ -175,6 +178,7 @@ function buildPole(M, hand) {
 // 腿：大腿、小腿（小腿肚在后）、登山鞋
 function buildLeg(M, pelvis, s) {
   const hip = joint(pelvis, s * 0.1, -0.04, 0);
+  hip.rotation.order = 'ZXY';       // 先外展再前后摆：整条腿始终在一个平面里，反向运动学好解
   mk(loft([...ballDn(-0.43, 0.06), [-0.43, 0.06, 0.062, 0.06], [-0.34, 0.066, 0.07, 0.068], [-0.2, 0.08, 0.088, 0.085], [-0.08, 0.088, 0.096, 0.095], [0.0, 0.086, 0.09, 0.093], [0.05, 0.07, 0.07, 0.076], [0.085, 0.03]], { seg: 14 }), M.pants, hip);
   const kn = joint(hip, 0, -0.43, 0);
   mk(loft([[-0.42, 0.05, 0.055, 0.056], [-0.4, 0.052, 0.056, 0.057], [-0.355, 0.047, 0.05, 0.053], [-0.26, 0.052, 0.05, 0.067], [-0.14, 0.058, 0.056, 0.07], [-0.03, 0.06, 0.064, 0.062], [0, 0.06], ...ballUp(0, 0.06)], { seg: 14, capB: false }), M.pants, kn);
@@ -259,7 +263,7 @@ export function buildHuman(M, o = {}) {
   // 颈、头
   const neck = joint(spine, 0, 0.44, 0);
   const head = joint(neck, 0, 0.1, 0.01);
-  buildHead(M, head);
+  const lids = buildHead(M, head);
   const hatG = joint(head, 0, 0.06, 0);
   if (o.hat === 'brim') buildBrimHat(M, hatG); else if (o.hat) buildBeanie(M, hatG);
   const lampG = joint(head, 0, 0.09, 0);
@@ -276,7 +280,7 @@ export function buildHuman(M, o = {}) {
   const packG = joint(spine, 0, 0.18, -0.13);
   const P = o.pack ? buildPack(M, packG) : {};
   compact(root);
-  return { root, pelvis, spine, neck, head, hatG, lampG, arm, leg, packG, ...P };
+  return { root, pelvis, spine, neck, head, hatG, lampG, arm, leg, packG, lids, ...P };
 }
 
 // 给一个人摆固定姿势（路人用）。pose：{ pelvisY, spine, neck, shL, shR, elL, elR, hipL, hipR, knL, knR, anL, anR }，值是 [x, y, z] 或一个数（绕 x）
