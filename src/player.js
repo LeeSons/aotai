@@ -29,6 +29,11 @@ export const STANCE_NAME = { stand: '慢走', run: '快跑', crouch: '蹲行', p
 
 // 腿的尺寸（和 human.js 里的骨架一致）：大腿、小腿长度，脚踝离鞋底的高度，髋关节在骨盆里的位置，腿最长能伸多远
 const L1 = 0.43, L2 = 0.43, ANK_H = 0.085, HIP_X = 0.1, HIP_Y = -0.04, REACH = 0.852;
+const TOE_Z = 0.2, HEEL_Z = 0.08;      // 靴尖、靴跟离脚踝的前后距离
+// 脚掌绕着靴尖（脚跟抬起，p > 0）或靴跟（脚尖翘起，p < 0）转 p 弧度时，脚踝相对“脚掌放平”要挪多少：
+// 这样着地的那个点（靴尖或靴跟）在地上纹丝不动，硬底靴也不会戳进地里
+const footDz = (p) => p >= 0 ? TOE_Z * (1 - Math.cos(p)) + ANK_H * Math.sin(p) : -(HEEL_Z * (1 - Math.cos(p)) - ANK_H * Math.sin(p));
+const footDy = (p) => p >= 0 ? TOE_Z * Math.sin(p) - ANK_H * (1 - Math.cos(p)) : -HEEL_Z * Math.sin(p) - ANK_H * (1 - Math.cos(p));
 const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion();
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _e1 = new THREE.Euler();
@@ -68,7 +73,7 @@ export class Player {
     // 脚的落点（相对身体、平地基准）、脚掌俯仰、脚下地面比身体中心高多少；反向运动学的权重；骨盆被腿“拉低”了多少
     this.footT = { L: new THREE.Vector3(-HIP_X, ANK_H, 0), R: new THREE.Vector3(HIP_X, ANK_H, 0) };
     this.footP = { L: 0, R: 0 }; this.footG = { L: 0, R: 0 }; this._u = { L: 0, R: 0.5 };
-    this.ikW = 0; this.pelvisBaseY = 0.96; this.pelvisDrop = 0; this.packLag = 0.96; this.blinkT = 2;
+    this.ikW = 0; this.pelvisBaseY = 0.975; this.pelvisDrop = 0; this.packLag = 0.975; this.blinkT = 2; this.gaitRun = 0; this.gaitT = 0; this.hsLP = 0; this.tanF = 0;
     this.buildModel();
   }
 
@@ -376,24 +381,42 @@ export class Player {
     const run = this.sprinting;
     const k = clamp(hs / (run ? SPEED.run : SPEED.walk), 0, 1.3);
     const rate = run ? 9.5 : this.stance === 'crouch' ? 7 : this.stance === 'prone' ? 4.5 : 6.4;
-    // 站姿的步态跟着实际速度变：慢的时候是走（两脚交替着地），快起来变成小跑（有腾空），冲刺时步频更高。
-    // 这样脚在地上“蹬过”的距离和身体前进的距离对得上，不滑步。
+    // 步态看“意图”：按住冲刺才跑（有腾空）；平常移动一律是走（总有一只脚在地上），走得快就迈大步、加快步频。
+    // 只有无敌模式高速档那种远超步行的速度才自动换成跑。步频、步幅按实际速度算，脚在地上“蹬过”的距离和身体前进的距离对得上。
     const onFeet = this.onGround && !this.sliding && !this.sitting && this.ko <= 0 && !this.flying;
     const upright = this.stance === 'stand' && onFeet, crouching = this.stance === 'crouch' && onFeet;
     let G = null;
+    // 面朝方向的坡度（上坡为正）：坡上步子收小、落脚点往高处那只脚偏、重心压低
+    const n0 = this.groundN, fN0 = n0 ? n0.x * Math.sin(this.yaw) + n0.z * Math.cos(this.yaw) : 0;
+    this.tanF += ((n0 ? clamp(-fN0 / Math.max(n0.y, 0.3), -0.6, 0.6) : 0) - this.tanF) * (1 - Math.exp(-dt * 8));
+    const tF = this.tanF;
     if (upright || crouching) {
-      const gr = crouching ? 0 : smoothstep(1.8, 3.3, hs), sp = crouching ? 0 : smoothstep(4.6, 6.6, hs);
-      const f = Math.min(4.3, lerp(1.55 + 0.42 * hs, 2.75 + 0.07 * hs, gr) + sp * 0.75);      // 每秒几步
-      const d = lerp(0.62, 0.36, gr) - sp * 0.05;                                            // 一条腿一个周期里着地的比例
-      const S = Math.min(hs * d * 2 / f, crouching ? 0.92 : lerp(0.84, 1.0, gr) + sp * 0.06);  // 着地期间脚相对身体往后走多远
-      G = { gr, sp, f, d, S, low: crouching ? 1 : 0 };
+      // （速度要持续偏高才算：被阵风猛推一下、撞到东西弹一下，不会让人突然换成跑步）
+      this.hsLP += (hs - this.hsLP) * (1 - Math.exp(-dt * 3));
+      const runWant = crouching ? 0 : this.sprinting ? 1 : smoothstep(3.8, 4.8, Math.min(hs, this.hsLP));
+      this.gaitRun += (runWant - this.gaitRun) * (1 - Math.exp(-dt * 7));
+      const gr = this.gaitRun, sp = smoothstep(4.6, 6.6, hs) * gr;
+      const wk = crouching ? 0.3 : smoothstep(0.9, 2.8, hs);                  // 走得有多急：0 闲步，1 大步快走
+      let fW = 1.45 + 0.36 * hs;                                               // 走：每秒几步
+      const dW = lerp(0.64, 0.52, wk);                                         // 一条腿一个周期里着地的比例（越快，双脚同时着地的时间越短）
+      const SW = crouching ? 0.92 : lerp(0.86, 1.06, wk) * (1 - Math.abs(tF) * 0.35);   // 腿迈得开的最大步幅；坡上步子收小
+      const need = hs * dW * 2 / fW;
+      if (need > SW) fW = Math.min(fW * lerp(1, need / SW, 0.65), Math.max(fW, 3.4));   // 步子迈不了那么大：大半靠加快步频补上（但不至于碎步小跑）
+      const f = Math.min(4.3, lerp(fW, 2.75 + 0.07 * hs, gr) + sp * 0.75);
+      const d = lerp(dW, 0.36, gr) - sp * 0.09;                                // 跑得越快，每一步触地的时间越短
+      const S = Math.min(hs * d * 2 / f, lerp(SW, 1.0 - Math.abs(tF) * 0.2, gr));   // 着地期间脚相对身体往后走多远
+      const low = crouching ? 1 : 0, wkE = wk * (1 - gr);
+      // 脚掌的俯仰：落地时脚跟先着地（脚尖翘起 heel），离地前脚跟抬起、用脚尖蹬（toe）；shift：走路时落脚点收在身前不远、蹬到身后
+      const heel = -(0.3 + 0.08 * wkE) * (1 - gr * 0.6) * (1 - low * 0.6), toe = 0.6 + 0.2 * wkE - low * 0.1;
+      const shift = (0.09 * gr + (0.04 + 0.08 * wkE) * (1 - gr) - 0.25 * tF) * (1 - low);   // 上坡：前脚往高处多伸、后脚少拖；下坡反过来
+      G = { gr, sp, wk: wkE, f, d, S, low, heel, toe, shift };
       if (this.moving) this.phase += dt * Math.PI * f * (back ? -1 : 1);
-    } else this.phase += dt * rate * Math.max(k, this.moving ? 0.5 : 0) * (back ? -1 : 1);
+    } else { this.gaitRun = 0; this.hsLP = hs; this.phase += dt * rate * Math.max(k, this.moving ? 0.5 : 0) * (back ? -1 : 1); }
     const gaitOn = (upright || crouching) && this.moving && !this.warming;
     const s = Math.sin(this.phase), c = Math.cos(this.phase);
     const mv = this.moving ? 1 : 0;
     const poles = this.polesOut;
-    let pelvisY = 0.96, pelvisX = 0, pelvisZ = 0, pelvisYaw = 0;
+    let pelvisY = 0.975, pelvisX = 0, pelvisZ = 0, pelvisYaw = 0;
     const lean = clamp(this.uphill, -0.3, 0.6) * 0.35;
 
     if (this.ko > 0 && this.ko > 0.5) {
@@ -445,14 +468,20 @@ export class Player {
       if (poles) { set('shL', -0.55 + s * 0.2 * mv, 0, -0.15); set('shR', -0.55 - s * 0.2 * mv, 0, 0.15); set('elL', -0.7); set('elR', -0.7); }
       else { set('shL', -0.35 + s * 0.2 * mv, 0, -0.25); set('shR', -0.35 - s * 0.2 * mv, 0, 0.25); set('elL', -0.9); set('elR', -0.9); }
     } else if (this.moving && G) {
-      // 走 / 小跑 / 冲刺：腿由后面的反向运动学按落脚点来解，这里只管骨盆、上身和手臂
-      const { gr, sp, d } = G;
+      // 走 / 跑 / 冲刺：腿由后面的反向运动学按落脚点来解，这里只管骨盆、上身和手臂
+      const { gr, sp, d, wk, S } = G;
       const c2 = Math.cos(2 * (this.phase - Math.PI * d));
-      // 重心起伏：走的时候单脚撑地时最高，跑的时候撑地时最低、腾空时最高
-      pelvisY = lerp(0.945, 0.9, gr) - sp * 0.02 + lerp(0.02, -0.03, gr) * c2 - mods.load * 0.012;
-      pelvisYaw = c * lerp(0.07, 0.12, gr);                 // 迈哪条腿，哪边的胯往前送
+      const yawA = lerp(0.07 + 0.05 * wk, 0.12, gr);
+      // 重心起伏。走：单脚撑地时最高；两脚一前一后都着地的那一刻腿伸得最开，骨盆降到两条腿都刚好够得着的高度。
+      // 跑：撑地时最低、腾空时最高
+      const hipF = HIP_X * Math.sin(yawA);
+      const zf = 0.5 * S + footDz(G.heel) - G.shift - hipF, zb = -0.5 * S + footDz(G.toe) - G.shift + hipF;
+      const lim = Math.min(ANK_H + footDy(G.heel) + zf * tF + Math.sqrt(Math.max(0.05, REACH * REACH - zf * zf)), ANK_H + footDy(G.toe) + zb * tF + Math.sqrt(Math.max(0.05, REACH * REACH - zb * zb))) - HIP_Y - 0.006;
+      const low2 = Math.min(0.96, lim), top = Math.min(0.972, low2 + 0.05);     // 坡上整体压低，起伏不超过 5 厘米
+      pelvisY = lerp(top - (top - low2) * (1 - c2) * 0.5, 0.885 - sp * 0.01 - 0.03 * c2 - Math.abs(tF) * 0.07, gr) - mods.load * 0.012;
+      pelvisYaw = c * yawA;                                 // 迈哪条腿，哪边的胯往前送；步子越大送得越多
       pelvisZ = -s * lerp(0.03, 0.02, gr);                  // 摆动腿一侧的胯略低
-      const fl = lerp(0.06, 0.15, gr) + sp * 0.1 + lean + mods.load * 0.1;
+      const fl = lerp(0.05 + 0.04 * wk, 0.15, gr) + sp * 0.1 + lean + mods.load * 0.1;
       set('spine', fl, -pelvisYaw * 1.7, -pelvisZ * 0.9);   // 肩和胯反着拧
       set('neck', -fl * 0.55 - lean * 0.2);
       // 腿的大致姿态（只在反向运动学淡入淡出时用得上）
@@ -465,15 +494,15 @@ export class Player {
         set('shL', -0.42 + c * 0.3, 0, -0.12); set('shR', -0.42 - c * 0.3, 0, 0.12);
         set('elL', -0.75 - Math.max(0, -c) * 0.25); set('elR', -0.75 - Math.max(0, c) * 0.25);
       } else {
-        // 摆臂：和对侧的腿同步；跑起来肘弯得更多、摆幅更大
-        const Aa = lerp(0.4, 0.8, gr) + sp * 0.2, eb = lerp(-0.35, -1.4, gr);
+        // 摆臂：和对侧的腿同步。走的时候手臂基本垂着、自然前后摆，走得急摆幅大一点；跑起来肘弯得更多
+        const Aa = lerp(0.32 + 0.22 * wk, 0.8, gr) + sp * 0.2, eb = lerp(-0.26 - 0.26 * wk, -1.4, gr);
         set('shL', c * Aa + gr * 0.1, 0, -0.08 - gr * 0.06); set('shR', -c * Aa + gr * 0.1, 0, 0.08 + gr * 0.06);
         set('elL', eb - Math.max(0, -c) * 0.3); set('elR', eb - Math.max(0, c) * 0.3);
       }
     } else {
       // 站立：呼吸、发抖、扶膝喘气
       const br = Math.sin(T * (1.4 + this.tired * 1.6)) * (0.015 + this.tired * 0.03);
-      pelvisY = 0.96;
+      pelvisY = 0.975;
       set('spine', 0.04 + br + this.tired * 0.55); set('neck', -0.02 - this.tired * 0.35);
       set('hipL', -0.02 - this.tired * 0.35, 0, -0.04); set('hipR', 0.02 - this.tired * 0.35, 0, 0.04);
       set('knL', 0.05 + this.tired * 0.5); set('knR', 0.05 + this.tired * 0.5); set('anL', -this.tired * 0.15); set('anR', -this.tired * 0.15);
@@ -527,6 +556,7 @@ export class Player {
     // 站、走、跑、蹲这些直立的姿势：先定下每只脚该落在哪（走跑时按步态算，其他时候取当前姿势的脚位），
     // 再查那只脚正下方的地面有多高（含石头），把脚踝放到地面上，反过来解出髋和膝该弯多少；
     // 够不着就把骨盆往下带一点。脚掌顺着坡度放平。坐、趴、滑坠、腾空、倒地不走这一套。
+    this.gaitT = gaitOn ? Math.min(1, this.gaitT + dt * 3.2) : 0;
     const ikWant = (upright || (this.stance === 'crouch' && this.onGround && !this.sliding && !this.sitting && this.ko <= 0 && !this.flying)) && !this.warming && this.rise <= 0;
     this.ikW += ((ikWant ? 1 : 0) - this.ikW) * (1 - Math.exp(-dt * (ikWant ? 9 : 16)));
     let drop = 0;
@@ -536,25 +566,32 @@ export class Player {
       _q1.setFromEuler(this.pelvis.rotation); _q2.copy(_q1).invert();
       for (const side of ['L', 'R']) {
         const sd = side === 'L' ? -1 : 1, ft = this.footT[side];
-        let tx, ty, tz, pitch;
+        let tx, ty, tz, pitch, air = 0;
         if (gaitOn && G) {
           const u0 = this.phase / (Math.PI * 2) + (side === 'R' ? 0.5 : 0), u = u0 - Math.floor(u0);
-          const { gr, d, S, low } = G, heel = -0.3 * (1 - gr * 0.6) * (1 - low * 0.6);
-          let z, lift;
+          const { gr, d, S, low, wk, heel, toe } = G;
+          // 坡上脚掌是贴着坡面转的：把“绕靴尖 / 靴跟转”带来的脚踝位移从坡面坐标转回水平、竖直
+          const cs = 1 / Math.sqrt(1 + tF * tF), sn = tF * cs;
+          // （竖直方向量的是“脚踝离它正下方地面多高”，脚下地面的高低另由 footG 负责）
+          const dzw = (p) => footDz(p) * cs - footDy(p) * sn, dyw = (p) => (ANK_H + footDy(p)) / cs - ANK_H;
+          let z, clear = 0;
           if (u < d) {
-            // 着地：脚跟先落（脚尖翘起），随身体前移向后蹬，最后脚跟抬起、脚尖蹬地
-            const t = u / d, ho = smoothstep(0.6, 1.0, t);
-            z = S * (0.5 - t) + 0.05 * ho; lift = 0.075 * ho;
-            pitch = heel * (1 - smoothstep(0.0, 0.2, t)) + 0.6 * ho;
+            // 着地：脚跟落地 → 放平 → 脚跟抬起。脚踝跟着脚掌的转动挪位置，着地的那一点不动
+            const t = u / d;
+            pitch = heel * (1 - smoothstep(0.0, 0.22, t)) + toe * smoothstep(0.58, 1.0, t);
+            z = S * (0.5 - t) + dzw(pitch);
           } else {
-            // 摆动：抬脚、前摆、落地前脚尖翘起
-            const t = (u - d) / (1 - d), e = t * t * (3 - 2 * t);
-            const H = lerp(0.1, 0.24, gr) + G.sp * 0.1 - low * 0.03;
-            z = S * (-0.5 + e) + 0.05 * (1 - e);
-            lift = H * Math.pow(Math.sin(Math.PI * Math.pow(t, lerp(0.85, 0.62, gr))), 0.9) + 0.075 * (1 - t) * (1 - t);
-            pitch = lerp(0.6, heel, smoothstep(0.15, 0.9, t));
+            // 摆动：抬脚、前摆，脚掌从“脚尖朝下”转到“脚尖翘起”准备落地。
+            // 离地和落地的瞬间脚还带着一部分“相对身体往后”的速度，这样落下去不会在地上往前蹭
+            const t = (u - d) / (1 - d), t2 = t * t, t3 = t2 * t;
+            pitch = lerp(toe, heel, smoothstep(0.15, 0.9, t));
+            const z0 = -0.5 * S + dzw(toe), z1 = 0.5 * S + dzw(heel), m = -Math.min(S / d * (1 - d), 1.2);   // m：着地时脚相对身体的速度
+            z = z0 * (2 * t3 - 3 * t2 + 1) + z1 * (3 * t2 - 2 * t3) + m * (lerp(0.5, 0.3, gr) * (t3 - 2 * t2 + t) + lerp(1.0, 0.35, gr) * (t3 - t2));
+            const H = lerp(0.055 + 0.02 * wk, 0.17, gr) + G.sp * 0.08 - low * 0.015;       // 靴底最低点离地多高
+            clear = H * Math.pow(Math.sin(Math.PI * Math.pow(t, lerp(0.85, 0.62, gr))), lerp(1.0, 0.9, gr));
           }
-          tx = sd * (0.088 - 0.025 * gr); ty = ANK_H + lift; tz = z - 0.03 * gr;
+          const lift = dyw(pitch) + clear; air = clear;
+          tx = sd * (0.088 - 0.025 * gr); ty = ANK_H + lift; tz = z - G.shift;
           // 脚落地的一刻：脚步声、扬尘、脚印都从这里发
           const up = this._u[side];
           if (Math.abs(u - up) > 0.5) this.stepSide = side;
@@ -571,23 +608,25 @@ export class Player {
           pitch = hp[0] + kn[0] + an[0] + pelvisX;
           this._u[side] = side === 'R' ? 0.5 : 0;
         }
-        const rf = 1 - Math.exp(-dt * (gaitOn ? 30 : 12));
+        // 刚迈步的头一小会儿慢慢跟上（免得从站姿跳到步态）；走稳之后紧跟目标，不然脚落地、离地时会被“拖”着滑一下
+        const rf = 1 - Math.exp(-dt * (gaitOn ? lerp(28, 170, this.gaitT) : 12));
         ft.x += (tx - ft.x) * rf; ft.y += (ty - ft.y) * rf; ft.z += (tz - ft.z) * rf;
         this.footP[side] += (pitch - this.footP[side]) * rf;
         // 这只脚正下方的地面（相对身体中心的地面）
         const wx = this.pos.x + ft.x * cy + ft.z * sy, wz = this.pos.z - ft.x * sy + ft.z * cy;
         const gnd = groundAt(wx, wz), gy = clamp(gnd.y - this.pos.y, -0.45, 0.45);
         this.footG[side] += (gy - this.footG[side]) * (1 - Math.exp(-dt * (gnd.onRock || Math.abs(gy - this.footG[side]) > 0.12 ? 26 : 120)));
-        const T = FT[side] = { x: ft.x, y: ft.y + this.footG[side], z: ft.z, wx, wz };
+        const T = FT[side] = { x: ft.x, y: ft.y + this.footG[side], z: ft.z, wx, wz, air };
         // 腿够不够长：不够就要把骨盆带低
         _v1.set(sd * HIP_X, HIP_Y, 0).applyQuaternion(_q1);
         const hx = T.x - _v1.x, hz = T.z - _v1.z;
         const maxHipY = T.y + Math.sqrt(Math.max(0.03, REACH * REACH - hx * hx - hz * hz));
-        drop = Math.max(drop, this.pelvisBaseY + _v1.y - maxHipY);
+        // 只有踩在地上的脚才把骨盆往下带；悬在空中的脚够不着就够不着，不影响身体
+        drop = Math.max(drop, (this.pelvisBaseY + _v1.y - maxHipY) * (1 - smoothstep(0.0, 0.07, air)));
       }
       drop = clamp(drop, 0, 0.4) * this.ikW;
     }
-    this.pelvisDrop += (drop - this.pelvisDrop) * (1 - Math.exp(-dt * 20));
+    this.pelvisDrop += (drop - this.pelvisDrop) * (1 - Math.exp(-dt * lerp(20, 120, this.gaitT)));
     this.pelvis.position.y = this.pelvisBaseY - this.pelvisDrop;
     if (this.ikW > 0.002) {
       const w = this.ikW, py = this.pelvis.position.y;
@@ -608,7 +647,8 @@ export class Player {
         hr.x += (hipX - hr.x) * w; hr.y *= 1 - w; hr.z += (ab - hr.z) * w;
         kr.x += (knee - kr.x) * w; kr.y *= 1 - w; kr.z *= 1 - w;
         // 脚掌：抵消掉腿和骨盆的转动，再加上步态的俯仰和坡度
-        const stance = T.y - this.footG[side] < ANK_H + 0.03 ? 1 : 0.4;
+        // 走跑时只要靴底还挨着地（哪怕只剩靴尖或靴跟），脚掌就完全顺着坡面；抬到空中再放松
+        const stance = gaitOn ? 1 - 0.6 * smoothstep(0.0, 0.08, T.air) : T.y - this.footG[side] < ANK_H + 0.03 ? 1 : 0.4;
         const anX = this.footP[side] - slope * stance - (this.pelvis.rotation.x + hipX + knee);
         ar.x += (anX - ar.x) * w; ar.y *= 1 - w; ar.z += (-ab - this.pelvis.rotation.z - ar.z) * w;
       }
