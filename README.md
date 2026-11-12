@@ -1,3 +1,5 @@
+<p align="right"><b>简体中文</b> · <a href="README.en.md">English</a></p>
+
 <div align="center">
 
 <a href="https://leesons.github.io/aotai/"><img src="docs/hero.jpg" alt="鳌太 · 九死一生 标题画面：日出时分的导航架与云海" width="100%"></a>
@@ -9,6 +11,9 @@
 没有贴图，没有模型，没有音频文件，没有构建步骤。<br>
 山、云、雪、人、风声和配乐，全部由一万行 JavaScript 现场算出来。
 
+<sub>A hardcore 3D hiking-survival game that runs in your browser. No textures, no models, no audio files, no build step —<br>
+every mountain, cloud, snowflake and note of music is computed at runtime by about 11,000 lines of JavaScript. <a href="README.en.md"><b>English README →</b></a></sub>
+
 <a href="https://leesons.github.io/aotai/"><img src="https://img.shields.io/badge/%E2%96%B6%20%E5%9C%A8%E7%BA%BF%E8%AF%95%E7%8E%A9-%E6%89%93%E5%BC%80%E5%8D%B3%E7%8E%A9%20%C2%B7%20%E6%97%A0%E9%9C%80%E5%AE%89%E8%A3%85-d8b46a?style=for-the-badge" alt="在线试玩：打开即玩，无需安装"></a>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
@@ -18,7 +23,11 @@
 ![平台：PC 与手机](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-PC%20%7C%20%E6%89%8B%E6%9C%BA-8b949e)
 [![GitHub stars](https://img.shields.io/github/stars/LeeSons/aotai?style=social)](https://github.com/LeeSons/aotai/stargazers)
 
-[在线试玩](https://leesons.github.io/aotai/) · [这是什么](#这是什么) · [玩法](#玩法) · [画面是怎么来的](#画面是怎么来的) · [本地运行](#本地运行) · [English](#english)
+[在线试玩](https://leesons.github.io/aotai/) · [这是什么](#这是什么) · [玩法](#玩法) · [画面是怎么来的](#画面是怎么来的) · [本地运行](#本地运行) · [English](README.en.md)
+
+<a href="https://leesons.github.io/aotai/"><img src="docs/demo.gif" alt="实机录屏：导航架的日落、秋天的林道、九重石海、雾中的万仙阵石塔、主脊上的风雪" width="720"></a>
+
+<sub>实机录屏：导航架日落 · 秋天的林道 · 九重石海 · 雾中的万仙阵 · 主脊风雪</sub>
 
 </div>
 
@@ -218,10 +227,8 @@ python3 serve.py
 
 ## English
 
-**The Aotai Traverse** is a hardcore hiking-survival game that runs entirely in the browser.
+**The Aotai Traverse** is a hardcore 3D hiking-survival game that runs entirely in the browser: no textures, no models, no audio files, no build step. Everything you see and hear is generated at runtime.
 
-The Aotai line is a high-altitude ridge traverse across China's Qinling Mountains, linking Mount Ao and Mount Taibai (3,771 m). It is notorious for sudden weather, long waterless stretches and boulder fields, and has been officially closed to hikers since 2018. This game lets you attempt it anyway: pick a season, spend a tight budget on gear, then manage core temperature, hydration, altitude sickness, injuries and morale across 31 real landmarks. There are 16 ways to die, and each one comes with an explanation of what happens in real life.
+**[Play it here](https://leesons.github.io/aotai/)** · **[Read the English README](README.en.md)**
 
-Everything is procedural. Terrain, PBR textures, trees, buildings, the hiker's walk cycle, ten kinds of weather, sound effects and the pentatonic soundtrack are all generated at runtime by about 11,000 lines of vanilla JavaScript on top of Three.js. There are no image, model or audio files and no build step.
-
-**[Play it here](https://leesons.github.io/aotai/)**, on desktop or phone. In-game text is Chinese only for now; localization PRs are very welcome.
+In-game text is Chinese only for now; localization PRs are very welcome.
