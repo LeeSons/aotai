@@ -12,7 +12,7 @@ export const SEC_PER_GAME_HOUR = 60 / GAME_MIN_PER_SEC;
 // seg：从此地标到下一地标的地形类型
 // forest 林区爬升 / dead 火烧坡枯林 / meadow 高山草甸 / ridge 山脊 / cliff 悬崖窄脊 / stone 石海 / pillars 万仙阵（人垒的石塔阵）/ gully 野沟
 // open：开阔台地程度（0–1）。盆景园、西塬、东塬这类地方宽得看不到边，人在上面几乎感觉不到左右坡度
-// sea：满地石块的程度（0–1）。九重石海这种地方地面几乎全是石头，看不到土
+// sea：满地石块的程度（0–1）。石海里地面几乎全是石头，看不到土（飞机梁那几座尖峰是整块的岩脊，不算）
 export const ROUTE = [
   { name: '塘口村', alt: 1750, seg: 'forest', len: 340, kind: 'village', water: 1, safe: true,
     desc: '秦岭北麓的小山村，鳌太穿越的起点。村口的牌子写着：“鳌太线严禁穿越”。' },
@@ -30,7 +30,7 @@ export const ROUTE = [
     desc: '残破的药王庙遗址，石墙尚能挡风。附近偶有积水，但旱季常常干涸。' },
   { name: '麦秸岭（荞麦梁）', alt: 3450, seg: 'cliff', len: 230, kind: 'sign',
     desc: '狭窄的刃脊，一侧是深不见底的陡崖。大雾和阵风叠加时，这里是坠崖事故的高发地。' },
-  { name: '水窝子营地', alt: 3360, seg: 'stone', len: 120, kind: 'camp', water: 0.45, camp: true,
+  { name: '水窝子营地', alt: 3360, seg: 'stone', len: 120, sea: 1, kind: 'camp', water: 0.45, camp: true,
     desc: '石海边的一处凹地营地，名字里带“水”，但水坑在旱季经常干得只剩泥。' },
   { name: '飞机梁（主台）', alt: 3480, seg: 'meadow', len: 170, open: 1, kind: 'wreck',
     desc: '飞机梁因上世纪的一次空难得名。主台是一片宽阔平缓的高山台地，飞机残骸至今散落在草甸和石缝间。天好时一望无际，起雾时四面八方都一样。' },
@@ -38,11 +38,11 @@ export const ROUTE = [
   { name: '飞机梁·梁1', alt: 3575, seg: 'stone', len: 80, kind: 'sign', minor: true, peak: 1, desc: '主台之后是一连串花岗岩尖峰。这是第一座：窄脊陡坡，常常要手脚并用。' },
   { name: '飞机梁·梁2', alt: 3555, seg: 'stone', len: 80, kind: 'sign', minor: true, peak: 1, desc: '第二座石头尖峰，乱石嶙峋，两侧都是陡坡。' },
   { name: '飞机梁·梁3', alt: 3590, seg: 'stone', len: 130, kind: 'sign', minor: true, peak: 1, desc: '第三座尖峰，也是最高的一座。翻过去就能看到 2800 营地。' },
-  { name: '2800营地', alt: 3330, seg: 'stone', len: 200, kind: 'camp', water: 0.5, camp: true,
+  { name: '2800营地', alt: 3330, seg: 'stone', len: 200, sea: 1, kind: 'camp', water: 0.5, camp: true,
     desc: '石海环抱中的营地，有一处季节性水源。很多队伍在这里补水，也有很多队伍在这里发现无水可补。' },
-  { name: '金字塔·塔1', alt: 3550, seg: 'stone', len: 90, kind: 'sign', minor: true, desc: '金字塔状的花岗岩峰，第一座。' },
-  { name: '金字塔·塔2', alt: 3600, seg: 'stone', len: 90, kind: 'sign', minor: true, desc: '第二座金字塔，石块松动，小心落石。' },
-  { name: '金字塔·塔3', alt: 3620, seg: 'stone', len: 200, kind: 'sign', minor: true, desc: '第三座金字塔，最高也最陡。' },
+  { name: '金字塔·塔1', alt: 3550, seg: 'stone', len: 90, sea: 1, kind: 'sign', minor: true, desc: '金字塔状的花岗岩峰，第一座。' },
+  { name: '金字塔·塔2', alt: 3600, seg: 'stone', len: 90, sea: 1, kind: 'sign', minor: true, desc: '第二座金字塔，石块松动，小心落石。' },
+  { name: '金字塔·塔3', alt: 3620, seg: 'stone', len: 200, sea: 1, kind: 'sign', minor: true, desc: '第三座金字塔，最高也最陡。' },
   { name: '西塬', alt: 3500, seg: 'meadow', len: 230, open: 1, kind: 'sign', camp: true,
     desc: '开阔的高山草甸台地。天好时一望无际，起雾时四面八方都长得一模一样。' },
   { name: '九重石海（太白梁）', alt: 3580, seg: 'stone', len: 320, sea: 1, kind: 'sign',

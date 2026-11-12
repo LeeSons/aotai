@@ -106,6 +106,13 @@ export function seaAt(x) {
   const sb = segBlend(x);
   return sb.w < 1 ? lerp(seaOf(sb.j), seaOf(sb.i), sb.w) : seaOf(sb.i);
 }
+// 具体到某一点：营地周围留出一块碎石地，不铺石块（要有地方扎营、生火）
+export function seaXZ(x, z) {
+  const s = seaAt(x);
+  if (s <= 0) return 0;
+  const wp = ROUTE[nearestWaypoint(x)];
+  return wp.camp ? s * smoothstep(15, 34, Math.hypot(x - wp.x, z - routeZ(wp.x))) : s;
+}
 // 这块地（x0 起、一块地宽）沾不沾得上符合条件的路段
 function chunkTouches(x0, fn) {
   for (let i = 0; i < ROUTE.length - 1; i++) if (ROUTE[i + 1].x > x0 - BLEND && ROUTE[i].x < x0 + CHUNK + BLEND && fn(ROUTE[i])) return true;
@@ -974,7 +981,7 @@ function buildTerrainGeo(cx, cz, res) {
     if (ti.ad > 260 + openAt(x) * 260) stone = alt > 3350 ? 0.6 : alt > 2900 ? 0.25 : 0.05;
     stone = Math.max(stone, spireAt(x) * 0.95);
     if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 3.4) stone = 1;      // 溪床全是卵石
-    const sea = seaAt(x) * (1 - smoothstep(200, 260, ti.ad));
+    const sea = seaXZ(x, z) * (1 - smoothstep(200, 260, ti.ad));
     if (sea > 0) stone = lerp(stone, 1, smoothstep(0, 0.4, sea));
     ter[k4] = stone; ter[k4 + 1] = clamp(ti.d, -60, 60);
     ter[k4 + 2] = ((tt !== 'stone' && tt !== 'pillars' && x > -10 && x < ROUTE_LENGTH + 30) ? 1 : 0.35) * (1 - sea);      // 石海里没有路迹
@@ -1122,16 +1129,18 @@ function buildObjects(chunk) {
     const want = QUAL.lite ? 2600 : 5200;
     for (let n = 0; n < want; n++) {
       const x = x0 + rs() * CHUNK, z = z0 + rs() * CHUNK, r1 = rs(), r2 = rs(), r3 = rs(), r4 = rs(), r5 = rs(), r6 = rs();
-      const sea = seaAt(x); if (sea < 0.03) continue;
+      const sea = seaXZ(x, z); if (sea < 0.03) continue;
       const ti = terrainInfo(x, z); if (ti.ad > 130) continue;
       // 走线两侧二十多米铺满，再往外渐渐稀下去（远处靠地面贴图）
       const p = sea * (ti.ad < 24 ? 1 : lerp(1, 0.3, smoothstep(24, 55, ti.ad)) * (1 - smoothstep(85, 130, ti.ad)));
       if (r1 > p) continue;
       const wp = ROUTE[nearestWaypoint(x)];
       if (Math.hypot(x - wp.x, z - routeZ(wp.x)) < 14) continue;
-      if (slopeNY(x, z) < 0.6) continue;
-      const r = 0.5 + Math.pow(r2, 1.9) * 1.8, h = r * (0.42 + r3 * 0.3);           // 比别处的石头扁：踩着走，不用爬
-      rocks.push({ x, z, y: heightAt(x, z) - r * (0.3 - 0.22 * r4), r, h, v: (r5 * 3.999) | 0, rot: r6 * 6.283, c: 0.5 + r3 * 0.24, l: r4 < 0.2 ? 1 : r4 < 0.28 ? 2 : 0, sea: 1, tx: (r5 * 7.3 % 1 - 0.5) * 0.36, tz: (r6 * 5.7 % 1 - 0.5) * 0.36 });
+      const ny = slopeNY(x, z); if (ny < 0.6) continue;
+      const g = Math.sqrt(1 - ny * ny) / ny;                                         // 坡度（每走一米升高多少米）
+      // 比别处的石头扁：踩着走，不用爬。坡上的石头按坡度往下埋：朝下坡那一侧的石沿不能高出地面一截，否则上坡时迎面就是一堵迈不上去的墙
+      const r = 0.5 + Math.pow(r2, 1.9) * 1.8, h = r * (0.42 + r3 * 0.3 + g * 0.5);
+      rocks.push({ x, z, y: heightAt(x, z) - r * Math.max(0.3 - 0.22 * r4, g * 1.08 - 0.06), r, h, v: (r5 * 3.999) | 0, rot: r6 * 6.283, c: 0.5 + r3 * 0.24, l: r4 < 0.2 ? 1 : r4 < 0.28 ? 2 : 0, sea: 1, tx: (r5 * 7.3 % 1 - 0.5) * 0.36, tz: (r6 * 5.7 % 1 - 0.5) * 0.36 });
     }
   }
   // ---- 万仙阵：满坡人垒的石塔，一丛一丛的 ----
@@ -1262,7 +1271,7 @@ function buildGrass(chunk) {
     if (t === 'meadow') p = 0.9; else if (t === 'forest' || t === 'gully') p = 0.6; else if (t === 'ridge' || t === 'cliff') p = 0.45; else if (t === 'dead') p = 0.7; else p = 0.08;
     if (ti.ad < 1.2 && t !== 'stone') p *= 0.2;
     p *= 1 - spireAt(x) * 0.85;   // 石头尖峰上几乎没有草
-    p *= 1 - seaAt(x) * 0.92;     // 石海里只有石缝里偶尔冒出一两丛
+    p *= 1 - seaXZ(x, z) * 0.92;  // 石海里只有石缝里偶尔冒出一两丛
     if (isF) { const patch = N.noise2(x * 0.045, z * 0.045); p *= smoothstep(0.05, 0.45, patch) * (t === 'meadow' || t === 'ridge' ? 1.4 : 0.6); }
     if (r > p) continue;
     if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 2.2) continue;

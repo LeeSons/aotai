@@ -1,6 +1,6 @@
 // ===================== 危险：羚牛 / 蛇 / 落石 / 阵风 / 雷击 / 失衡 / 湿滑结霜 / 蜱虫 / 幻觉 / 雾中怪事 =====================
 import * as THREE from 'three';
-import { heightAt, normalAt, terrainInfo, cliffSideAt, seaAt } from './terrain.js';
+import { heightAt, normalAt, terrainInfo, cliffSideAt, seaXZ } from './terrain.js';
 import { surfMat, plainMat } from './materials.js';
 import { rockGeo } from './geo.js';
 import { ROUTE, routeZ, routeDZ, yToAlt, season } from './data.js';
@@ -405,8 +405,8 @@ export class Hazards {
       const fatigue = (surv.energy < 30 ? 1.5 : 1) * (surv.status.sprain ? 1.4 : 1) * (surv.core < 34.5 ? 1.5 : 1);
       const vis = game.fogK > 0.5 || game.darkness > 0.6 ? 1.35 : 1;
       if ((ti.type === 'stone' || ti.type === 'pillars') && pl.onRock) {
-        // 九重石海满地都是石块，人几乎一直踩在石头上：按每一秒算的概率压低，折合下来比别处的石海危险一倍左右，而不是十倍
-        const p = 0.065 * (pl.sprinting ? 3 : 1) * bootQ * poleQ * stanceQ * vis * fatigue * H * (1 - seaAt(pl.pos.x) * 0.75);
+        // 满地石块的石海里人几乎一直踩在石头上：按每一秒算的概率压低，折合下来比零星有石头的地方危险一倍左右，而不是十倍
+        const p = 0.065 * (pl.sprinting ? 3 : 1) * bootQ * poleQ * stanceQ * vis * fatigue * H * (1 - seaXZ(pl.pos.x, pl.pos.z) * 0.75);
         if (this.rng() < p * dt) this.startLooseRock(game);
       }
       const wet = game.weather.wetGround > 0.35 || (game.wxLocal ? game.wxLocal.rain : 0) > 0.2;
