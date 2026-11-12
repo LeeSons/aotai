@@ -10,8 +10,9 @@ export const GAME_MIN_PER_SEC = 2.5;
 export const SEC_PER_GAME_HOUR = 60 / GAME_MIN_PER_SEC;
 
 // seg：从此地标到下一地标的地形类型
-// forest 林区爬升 / dead 火烧坡枯林 / meadow 高山草甸 / ridge 山脊 / cliff 悬崖窄脊 / stone 石海 / pillars 万仙阵石林 / gully 野沟
+// forest 林区爬升 / dead 火烧坡枯林 / meadow 高山草甸 / ridge 山脊 / cliff 悬崖窄脊 / stone 石海 / pillars 万仙阵（人垒的石塔阵）/ gully 野沟
 // open：开阔台地程度（0–1）。盆景园、西塬、东塬这类地方宽得看不到边，人在上面几乎感觉不到左右坡度
+// sea：满地石块的程度（0–1）。九重石海这种地方地面几乎全是石头，看不到土
 export const ROUTE = [
   { name: '塘口村', alt: 1750, seg: 'forest', len: 340, kind: 'village', water: 1, safe: true,
     desc: '秦岭北麓的小山村，鳌太穿越的起点。村口的牌子写着：“鳌太线严禁穿越”。' },
@@ -44,12 +45,12 @@ export const ROUTE = [
   { name: '金字塔·塔3', alt: 3620, seg: 'stone', len: 200, kind: 'sign', minor: true, desc: '第三座金字塔，最高也最陡。' },
   { name: '西塬', alt: 3500, seg: 'meadow', len: 230, open: 1, kind: 'sign', camp: true,
     desc: '开阔的高山草甸台地。天好时一望无际，起雾时四面八方都长得一模一样。' },
-  { name: '九重石海（太白梁）', alt: 3580, seg: 'stone', len: 320, kind: 'sign',
+  { name: '九重石海（太白梁）', alt: 3580, seg: 'stone', len: 320, sea: 1, kind: 'sign',
     desc: '鳌太线最长、最耗体力的石海。九重乱石无边无际，没有路迹，全凭方向感和地图。' },
   { name: '东塬', alt: 3520, seg: 'meadow', len: 220, open: 1, kind: 'sign', camp: true,
     desc: '石海尽头的另一片高山台地，风很大。' },
   { name: '万仙阵', alt: 3560, seg: 'pillars', len: 200, kind: 'sign',
-    desc: '成片的巨石林立如阵，传说姜子牙在此大摆万仙阵。雾中的石柱看起来像一个个人影。' },
+    desc: '满坡都是人用石片一块块垒起来的石塔，成百上千，密密麻麻排成了阵，传说姜子牙在此大摆万仙阵。雾中的石塔看起来像一个个人影。' },
   { name: '雷公庙', alt: 3500, seg: 'ridge', len: 220, kind: 'temple', shelter: true,
     desc: '供奉雷公的小庙，坐落在雷暴最频繁的山脊上。' },
   { name: '东跑马梁', alt: 3600, seg: 'cliff', len: 230, kind: 'sign',

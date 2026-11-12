@@ -100,6 +100,17 @@ export function openAt(x) {
   const sb = segBlend(x);
   return sb.w < 1 ? lerp(openOf(sb.j), openOf(sb.i), sb.w) : openOf(sb.i);
 }
+// 满地石块的程度（九重石海），在段与段之间平滑过渡
+function seaOf(i) { return ROUTE[clamp(i, 0, ROUTE.length - 2)].sea || 0; }
+export function seaAt(x) {
+  const sb = segBlend(x);
+  return sb.w < 1 ? lerp(seaOf(sb.j), seaOf(sb.i), sb.w) : seaOf(sb.i);
+}
+// 这块地（x0 起、一块地宽）沾不沾得上符合条件的路段
+function chunkTouches(x0, fn) {
+  for (let i = 0; i < ROUTE.length - 1; i++) if (ROUTE[i + 1].x > x0 - BLEND && ROUTE[i].x < x0 + CHUNK + BLEND && fn(ROUTE[i])) return true;
+  return false;
+}
 // 开阔台地的截面：几百米宽，两侧几乎感觉不到坡度，远处才圆滑地落下去——站在上面看不到边
 function crossOpen(d) {
   const ad = Math.abs(d);
@@ -285,18 +296,108 @@ export function initTerrainAssets(U) {
   MAT.grass = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.82, side: THREE.DoubleSide, sway: 0.35, grass: true, trans: 1.0, snow: 0.8, fastShadow: true });
   MAT.flower = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.6, side: THREE.DoubleSide, sway: 0.3, grass: true, trans: 0.8, emissive: 0x0a0a0a, fastShadow: true });
   // 岩石：三种形状 × 两档细节。归一化成“半径 1、顶高 0.75”，和碰撞用的椭球对得上
-  GEO.rocks = [0, 1, 2].map(s => [2, 1].map(detail => {
-    const g = rockGeo(100 + s * 17, detail, { cuts: 11 + s * 2, rough: 0.2 + s * 0.04 });
+  const normRock = (g, hard = 30) => {
     const pos = g.attributes.position; let maxY = 0, rr = 0;
     for (let i = 0; i < pos.count; i++) { maxY = Math.max(maxY, pos.getY(i)); rr += Math.hypot(pos.getX(i), pos.getZ(i)); }
     rr /= pos.count; const kx = 0.78 / rr;
     for (let i = 0; i < pos.count; i++) pos.setXYZ(i, pos.getX(i) * kx, pos.getY(i) * 0.75 / maxY, pos.getZ(i) * kx);
-    crease(g, 30);
+    crease(g, hard);
     g.computeBoundingSphere();
     // 顶点色：贴地的一圈发暗（泥、潮气），顶上略亮
     return paint(g, new THREE.Color(1, 1, 1), (c, x, y, z, nx, ny) => { c.multiplyScalar(0.62 + smoothstep(-0.25, 0.35, y) * 0.3 + Math.max(ny, 0) * 0.14); });
-  }));
+  };
+  GEO.rocks = [0, 1, 2].map(s => [2, 1].map(detail => normRock(rockGeo(100 + s * 17, detail, { cuts: 11 + s * 2, rough: 0.2 + s * 0.04 }))));
+  // 石海里的石块：数量多得多，所以面数少一档；切面多、起伏小，棱角分明
+  GEO.blocks = [0, 1, 2, 3].map(s => [1, 0].map(detail => weld(normRock(rockGeo(300 + s * 23, detail, { cuts: 16 + s * 2, rough: 0.1 + s * 0.03 }), 17))));
+  // 万仙阵的石塔
+  GEO.cairns = CAIRN_KINDS.map((K, k) => [false, true].map(lo => cairnGeo(700 + k * 37, K, lo)));
   buildGrassGeo();
+}
+
+// ---- 万仙阵的石塔：人用石片一块块垒起来的，下大上小，每块都略歪 ----
+// n 垒几块；r 最底下那块的半径（米）；lean 垒歪的程度；base 底下先围一圈大石头垫着（几块）；tier 垫两层
+const CAIRN_KINDS = [
+  { n: 5, r: 0.21 },                         // 四五块的小堆，到小腿
+  { n: 9, r: 0.26 },                         // 细细的一摞，齐腰
+  { n: 14, r: 0.33 },                        // 齐胸到一人高的石塔
+  { n: 11, r: 0.29, lean: 1 },               // 垒歪了的
+  { n: 10, r: 0.28, base: 6 },               // 底下一圈石头垫着，上面再垒
+  { n: 14, r: 0.34, base: 7, tier: 4 },      // 大石堆：两层底座，上面的塔比人还高
+];
+const _cv = new THREE.Vector3(), _ce = new THREE.Euler();
+function cairnGeo(seed, K, lo) {
+  const r = mulberry32(seed);
+  const pos = [], col = [];
+  // 一块石片：不规则多边形的扁石板，顶面略小一圈（棱是斜的）。rad 半径，th 厚，底面放在 (x, y, z)
+  const slab = (rad, th, x, y, z, tiltK = 1) => {
+    const n = 5 + ((r() * 3) | 0), a0 = r() * 6.283, el = 0.72 + r() * 0.28, ea = r() * 3.14;
+    const tone = 0.9 + r() * 0.42, warm = r();
+    const ce = Math.cos(ea), se = Math.sin(ea);
+    const bot = [], mid = [], top = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i + (r() - 0.5) * 0.5) / n * 6.283, d = rad * (0.8 + r() * 0.32);
+      const px = Math.cos(a) * d, pz = Math.sin(a) * d;
+      const u = px * ce + pz * se, v = (-px * se + pz * ce) * el;          // 略呈长条
+      const qx = u * ce - v * se, qz = u * se + v * ce;
+      const kb = 0.84 + r() * 0.12, yb = (r() - 0.5) * th * 0.1, yt = th * (0.9 + r() * 0.2);
+      bot.push([qx * kb, yb, qz * kb]); mid.push([qx, yt * 0.7, qz]); top.push([qx * 0.8, yt, qz * 0.8]);
+    }
+    _ce.set((r() - 0.5) * 0.24 * tiltK, 0, (r() - 0.5) * 0.24 * tiltK);
+    const cx = 0, cy = th * 0.5, cz = 0;
+    const tri = (A, B, C) => {
+      // 朝外的那一面才是正面
+      const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], vx = C[0] - A[0], vy = C[1] - A[1], vz = C[2] - A[2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const mx = (A[0] + B[0] + C[0]) / 3 - cx, my = (A[1] + B[1] + C[1]) / 3 - cy, mz = (A[2] + B[2] + C[2]) / 3 - cz;
+      const flip = nx * mx + ny * my + nz * mz < 0;
+      for (const P of flip ? [A, C, B] : [A, B, C]) {
+        _cv.set(P[0], P[1], P[2]).applyEuler(_ce);
+        pos.push(_cv.x + x, _cv.y + y, _cv.z + z);
+        const sh = tone * (0.72 + 0.28 * smoothstep(0, th * 0.75, P[1]));      // 压在下面那块上的一圈发暗
+        col.push(sh * (1 + (warm - 0.5) * 0.1), sh, sh * (1 - (warm - 0.5) * 0.14));
+      }
+    };
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      if (lo) { tri(bot[i], bot[j], top[j]); tri(bot[i], top[j], top[i]); }
+      else { tri(bot[i], bot[j], mid[j]); tri(bot[i], mid[j], mid[i]); tri(mid[i], mid[j], top[j]); tri(mid[i], top[j], top[i]); }
+    }
+    for (let i = 1; i < n - 1; i++) { tri(top[0], top[i], top[i + 1]); if (!lo) tri(bot[0], bot[i], bot[i + 1]); }
+  };
+  let y = 0, ox = 0, oz = 0, maxR = K.r;
+  if (K.base) {
+    // 底座：围一圈敦实的石头，中间填一块
+    const br = K.r * 1.2;
+    for (let i = 0; i < K.base; i++) {
+      const a = (i + r() * 0.5) / K.base * 6.283, d = br * (0.85 + r() * 0.3), sr = K.r * (0.72 + r() * 0.4);
+      slab(sr, sr * (0.8 + r() * 0.5), Math.cos(a) * d, -sr * 0.2, Math.sin(a) * d, 1.6);
+    }
+    slab(K.r * 1.25, K.r * 0.85, 0, 0, 0);
+    y = K.r * 0.72; maxR = br + K.r * 0.8;
+    if (K.tier) {
+      for (let i = 0; i < K.tier; i++) {
+        const a = (i + r() * 0.5) / K.tier * 6.283, d = br * 0.55, sr = K.r * (0.66 + r() * 0.3);
+        slab(sr, sr * (0.7 + r() * 0.4), Math.cos(a) * d, y - sr * 0.12, Math.sin(a) * d, 1.4);
+      }
+      y += K.r * 0.5;
+    }
+  }
+  const la = r() * 6.283, lean = K.lean || 0;
+  for (let i = 0; i < K.n; i++) {
+    const t = i / (K.n - 1);
+    const rad = K.r * (1 - 0.62 * Math.pow(t, 0.85)) * (0.86 + r() * 0.28);
+    const th = Math.max(0.05, rad * (0.42 + r() * 0.4));
+    ox += (r() - 0.5) * rad * 0.26 + Math.cos(la) * lean * rad * 0.13; oz += (r() - 0.5) * rad * 0.26 + Math.sin(la) * lean * rad * 0.13;
+    slab(rad, th, ox, y - th * 0.1, oz);
+    y += th * 0.86;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
+  g.computeVertexNormals();          // 不带索引：每个面一条法线，石片的棱是硬的
+  g.computeBoundingSphere(); g.computeBoundingBox();
+  K.h = y; K.rad = maxR;
+  return g;
 }
 
 // ---- 草丛：一丛十来片弯弯的草叶，根部颜色深、叶尖亮 ----
@@ -846,7 +947,7 @@ function buildTerrainGeo(cx, cz, res) {
   const step = CHUNK / res;
   const vn = res + 3; // 含裙边
   const count = vn * vn;
-  const pos = new Float32Array(count * 3), nor = new Float32Array(count * 3), col = new Float32Array(count * 3), ter = new Float32Array(count * 3);
+  const pos = new Float32Array(count * 3), nor = new Float32Array(count * 3), col = new Float32Array(count * 3), ter = new Float32Array(count * 4);
   const hgt = new Float32Array((res + 3) * (res + 3));
   // 先算高度（含外圈用于法线）
   for (let j = 0; j < vn; j++) for (let i = 0; i < vn; i++) {
@@ -867,14 +968,17 @@ function buildTerrainGeo(cx, cz, res) {
     nor[k] = nx; nor[k + 1] = ny; nor[k + 2] = nz;
     colorAt(x, z, y, ny, tmpC);
     col[k] = tmpC.r; col[k + 1] = tmpC.g; col[k + 2] = tmpC.b;
-    // 给着色器的分层信息：x 碎石覆盖度  y 离路迹中线的横向距离  z 这里有没有踩出来的小路
-    const ti = terrainInfo(x, z), tt = ti.type, alt = yToAlt(y);
+    // 给着色器的分层信息：x 碎石覆盖度  y 离路迹中线的横向距离  z 这里有没有踩出来的小路  w 石海（满地石块）
+    const ti = terrainInfo(x, z), tt = ti.type, alt = yToAlt(y), k4 = (j * vn + i) * 4;
     let stone = tt === 'stone' || tt === 'pillars' ? 0.95 : tt === 'ridge' ? 0.42 : tt === 'cliff' ? 0.5 : tt === 'meadow' ? (alt > 3400 ? 0.3 : 0.12) : tt === 'dead' ? 0.2 : 0.05;
     if (ti.ad > 260 + openAt(x) * 260) stone = alt > 3350 ? 0.6 : alt > 2900 ? 0.25 : 0.05;
     stone = Math.max(stone, spireAt(x) * 0.95);
     if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 3.4) stone = 1;      // 溪床全是卵石
-    ter[k] = stone; ter[k + 1] = clamp(ti.d, -60, 60);
-    ter[k + 2] = (tt !== 'stone' && tt !== 'pillars' && x > -10 && x < ROUTE_LENGTH + 30) ? 1 : 0.35;
+    const sea = seaAt(x) * (1 - smoothstep(200, 260, ti.ad));
+    if (sea > 0) stone = lerp(stone, 1, smoothstep(0, 0.4, sea));
+    ter[k4] = stone; ter[k4 + 1] = clamp(ti.d, -60, 60);
+    ter[k4 + 2] = ((tt !== 'stone' && tt !== 'pillars' && x > -10 && x < ROUTE_LENGTH + 30) ? 1 : 0.35) * (1 - sea);      // 石海里没有路迹
+    ter[k4 + 3] = sea;
   }
   const idx = new Uint32Array((vn - 1) * (vn - 1) * 6);
   let p = 0;
@@ -886,7 +990,7 @@ function buildTerrainGeo(cx, cz, res) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  g.setAttribute('aTer', new THREE.BufferAttribute(ter, 3));
+  g.setAttribute('aTer', new THREE.BufferAttribute(ter, 4));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeBoundingSphere();
   g.computeBoundingBox();
@@ -900,7 +1004,7 @@ function slopeNY(x, z) {
   return 2 * e / Math.hypot(hx, 2 * e, hz);
 }
 
-const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler(), _e2 = new THREE.Euler(0, 0, 0, 'YXZ');
 // 石头：近处的地块用精细模型，远处换成简化模型（只换引用，不重建实例）
 function setChunkLod(chunk, lod) {
   if (!chunk.objs || chunk.lod === lod) return;
@@ -972,7 +1076,7 @@ function buildObjects(chunk) {
     // ---- 岩石 ----
     let rockP = 0, rmin = 0.5, rmax = 1.6;
     if (t === 'stone') { rockP = ti.ad < 45 ? 0.55 : 0.2; rmin = 0.6; rmax = 2.0; }
-    else if (t === 'pillars') { rockP = ti.ad < 45 ? 0.32 : 0.15; rmin = 0.6; rmax = 1.8; }
+    else if (t === 'pillars') { rockP = ti.ad < 45 ? 0.2 : 0.15; rmin = 0.5; rmax = 1.5; }      // 万仙阵：地上是碎石和零星的矮石头，立着的全是人垒的石塔
     else if (t === 'ridge' || t === 'cliff') rockP = 0.07;
     else if (t === 'meadow') rockP = 0.03;
     else if (t === 'far') rockP = alt > 3300 ? 0.02 : 0;
@@ -984,7 +1088,6 @@ function buildObjects(chunk) {
     if (r1 < rockP) {
       const r = rmin + Math.pow(r2, 2.2) * (rmax - rmin) * (ti.ad > 60 ? 2 : 1);
       let h = r * (0.55 + r3 * 0.4);
-      if (t === 'pillars' && r3 > 0.55 && ti.ad > 4) h = r * (3 + r3 * 4.5); // 石柱
       if (spk > 0.3 && ti.ad > 3.5 && r3 > 0.4) h = r * (1.5 + r3 * 2.6); // 尖峰上的花岗岩石牙（不挡在走线上）
       if (ti.ad < 1.5 && t !== 'stone' && t !== 'pillars') continue;
       const lich = rnd();
@@ -1013,22 +1116,90 @@ function buildObjects(chunk) {
       trees[kind].push({ x, z, y: y - 0.1, s, rot: rnd() * 6.28, r: kind === 'shrub' || kind === 'rhodo' ? 0 : 0.32 * s, v: rnd() });
     }
   }
+  // ---- 石海：石块一块挨一块，把地面盖住（九重石海）----
+  if (chunkTouches(x0, w => w.sea)) {
+    const rs = mulberry32((chunk.cx * 40503) ^ (chunk.cz * 65599) ^ 0x51ea);
+    const want = QUAL.lite ? 2600 : 5200;
+    for (let n = 0; n < want; n++) {
+      const x = x0 + rs() * CHUNK, z = z0 + rs() * CHUNK, r1 = rs(), r2 = rs(), r3 = rs(), r4 = rs(), r5 = rs(), r6 = rs();
+      const sea = seaAt(x); if (sea < 0.03) continue;
+      const ti = terrainInfo(x, z); if (ti.ad > 130) continue;
+      // 走线两侧二十多米铺满，再往外渐渐稀下去（远处靠地面贴图）
+      const p = sea * (ti.ad < 24 ? 1 : lerp(1, 0.3, smoothstep(24, 55, ti.ad)) * (1 - smoothstep(85, 130, ti.ad)));
+      if (r1 > p) continue;
+      const wp = ROUTE[nearestWaypoint(x)];
+      if (Math.hypot(x - wp.x, z - routeZ(wp.x)) < 14) continue;
+      if (slopeNY(x, z) < 0.6) continue;
+      const r = 0.5 + Math.pow(r2, 1.9) * 1.8, h = r * (0.42 + r3 * 0.3);           // 比别处的石头扁：踩着走，不用爬
+      rocks.push({ x, z, y: heightAt(x, z) - r * (0.3 - 0.22 * r4), r, h, v: (r5 * 3.999) | 0, rot: r6 * 6.283, c: 0.5 + r3 * 0.24, l: r4 < 0.2 ? 1 : r4 < 0.28 ? 2 : 0, sea: 1, tx: (r5 * 7.3 % 1 - 0.5) * 0.36, tz: (r6 * 5.7 % 1 - 0.5) * 0.36 });
+    }
+  }
+  // ---- 万仙阵：满坡人垒的石塔，一丛一丛的 ----
+  const cairns = [];
+  if (chunkTouches(x0, w => w.seg === 'pillars')) {
+    const rc = mulberry32((chunk.cx * 92821) ^ (chunk.cz * 68917) ^ 0x7a3f);
+    const cell = new Map(), ck = (x, z) => Math.floor(x / 2.5) * 4099 + Math.floor(z / 2.5);
+    for (let n = 0; n < 7400; n++) {
+      const x = x0 + rc() * CHUNK, z = z0 + rc() * CHUNK, r1 = rc(), r2 = rc(), r3 = rc(), r4 = rc(), r5 = rc();
+      const ti = terrainInfo(x, z);
+      if (ti.type !== 'pillars' || ti.ad > 80 || ti.ad < 1.7) continue;
+      const clump = smoothstep(-0.3, 0.3, N2.noise2(x * 0.04, z * 0.04) + N.noise2(x * 0.13, z * 0.13) * 0.35);
+      if (r1 > (0.12 + 0.88 * clump) * (1 - smoothstep(26, 80, ti.ad)) * 0.62) continue;
+      const wp = ROUTE[nearestWaypoint(x)];
+      if (Math.hypot(x - wp.x, z - routeZ(wp.x)) < 12) continue;
+      if (slopeNY(x, z) < 0.86) continue;
+      // 小堆最多，一人高的少；大石堆只有零星几座
+      const k = r2 < 0.22 ? 0 : r2 < 0.5 ? 1 : r2 < 0.66 ? 3 : r2 < 0.86 ? 2 : r2 < 0.95 ? 4 : 5;
+      const K = CAIRN_KINDS[k], s = 0.8 + r3 * r3 * 0.75, rad = K.rad * s;
+      // 不和别的石塔、石头挤在一起
+      let ok = true;
+      const cx = Math.floor(x / 2.5), cz = Math.floor(z / 2.5);
+      for (let i = -1; i <= 1 && ok; i++) for (let j = -1; j <= 1 && ok; j++) {
+        const l = cell.get((cx + i) * 4099 + cz + j);
+        if (l) for (const o of l) if (Math.hypot(o.x - x, o.z - z) < o.r + rad + 0.25) { ok = false; break; }
+      }
+      if (ok) for (const o of rocks) if (Math.hypot(o.x - x, o.z - z) < o.r * 0.9 + rad) { ok = false; break; }
+      if (!ok) continue;
+      const c = { x, z, y: heightAt(x, z) - 0.05 * s, s, k, rot: r4 * 6.283, r: rad * 0.82, c: 0.5 + r5 * 0.26 };
+      cairns.push(c);
+      const key = ck(x, z); let l = cell.get(key); if (!l) { l = []; cell.set(key, l); } l.push({ x, z, r: rad });
+    }
+  }
   // 岩石实例
   const lod = chunk.lod = chunk.dist <= HI_DIST() ? 0 : 1;
-  const byV = [[], [], []];
-  for (const r of rocks) byV[r.v].push(r);
+  const byV = [[], [], [], [], [], [], []];           // 0–2 普通石头，3–6 石海里的石块
+  for (const r of rocks) byV[r.sea ? 3 + r.v : r.v].push(r);
   byV.forEach((list, v) => {
     if (!list.length) return;
-    const im = new THREE.InstancedMesh(GEO.rocks[v][lod], MAT.rock, list.length);
-    im.userData.lods = GEO.rocks[v]; im.layers.enable(2);      // 第 2 层：会被画进中距离阴影图
+    const lods = v < 3 ? GEO.rocks[v] : GEO.blocks[v - 3];
+    const im = new THREE.InstancedMesh(lods[lod], MAT.rock, list.length);
+    im.userData.lods = lods; im.layers.enable(2);      // 第 2 层：会被画进中距离阴影图
     list.forEach((r, k) => {
-      _q.setFromEuler(_e.set(0, r.rot, 0));
+      _q.setFromEuler(_e2.set(r.tx || 0, r.rot, r.tz || 0));
       _s.set(r.r, r.h / 0.85, r.r);
       _p.set(r.x, r.y + 0.12 * r.h, r.z);
       _m.compose(_p, _q, _s);
       im.setMatrixAt(k, _m);
       if (r.l === 1) tmpC2.setRGB(r.c * 1.0, r.c * 1.0, r.c * 0.9); else if (r.l === 2) tmpC2.setRGB(r.c * 1.07, r.c * 0.97, r.c * 0.87); else tmpC2.setRGB(r.c, r.c * 0.985, r.c * (0.94 + (k % 3) * 0.02));
       im.setColorAt(k, tmpC2);
+    });
+    im.castShadow = true; im.receiveShadow = true;
+    im.computeBoundingSphere();
+    group.add(im);
+  });
+  // 石塔实例
+  CAIRN_KINDS.forEach((K, k) => {
+    const list = cairns.filter(c => c.k === k);
+    if (!list.length) return;
+    const im = new THREE.InstancedMesh(GEO.cairns[k][lod], MAT.rock, list.length);
+    im.userData.lods = GEO.cairns[k]; im.layers.enable(2);
+    list.forEach((c, i) => {
+      _q.setFromEuler(_e.set(0, c.rot, 0));
+      _s.set(c.s, c.s * (0.92 + (c.rot % 0.16)), c.s);
+      _p.set(c.x, c.y, c.z);
+      _m.compose(_p, _q, _s);
+      im.setMatrixAt(i, _m);
+      im.setColorAt(i, tmpC2.setRGB(c.c * 1.02, c.c, c.c * 0.96));
     });
     im.castShadow = true; im.receiveShadow = true;
     im.computeBoundingSphere();
@@ -1062,7 +1233,7 @@ function buildObjects(chunk) {
     im.computeBoundingSphere(); group.add(im);
   }
   chunk.rocks = rocks;
-  chunk.trees = Object.values(trees).flat().filter(t => t.r > 0);
+  chunk.trees = Object.values(trees).flat().filter(t => t.r > 0).concat(cairns);      // 石塔和树干一样挡路，得绕着走
   for (const r of rocks) hashAdd(rockHash, r);
   for (const t of chunk.trees) hashAdd(treeHash, t);
   return group;
@@ -1091,6 +1262,7 @@ function buildGrass(chunk) {
     if (t === 'meadow') p = 0.9; else if (t === 'forest' || t === 'gully') p = 0.6; else if (t === 'ridge' || t === 'cliff') p = 0.45; else if (t === 'dead') p = 0.7; else p = 0.08;
     if (ti.ad < 1.2 && t !== 'stone') p *= 0.2;
     p *= 1 - spireAt(x) * 0.85;   // 石头尖峰上几乎没有草
+    p *= 1 - seaAt(x) * 0.92;     // 石海里只有石缝里偶尔冒出一两丛
     if (isF) { const patch = N.noise2(x * 0.045, z * 0.045); p *= smoothstep(0.05, 0.45, patch) * (t === 'meadow' || t === 'ridge' ? 1.4 : 0.6); }
     if (r > p) continue;
     if (x > STREAM.x0 && x < STREAM.x1 && Math.abs(ti.d - STREAM.off) < 2.2) continue;

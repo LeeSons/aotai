@@ -171,6 +171,48 @@ void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
   float st = max(A.x, max(B.x, C2.x * 0.6));
   c = col; r = mix(0.98, 0.84, st); ao = mix(0.5, 1.0, smoothstep(0.1, 0.5, h));
 }` };
+// 石海：石块一块挨一块把地面盖满——一米多的大块、半米上下的、填缝的碎块，三层叠在一起；石头之间是又深又黑的缝
+KINDS.blocks = { tile: 6.1, relief: 0.5, glsl: `
+// 一层石块：细胞噪声的每一格是一块石头。keep 以外的格子空着，留给小一号的石头去填。
+// 返回 x 石面（0 在石头边上 → 1 在石面上）y 高度 z、w 这块石头的两个随机数
+vec4 blk(vec2 uv, float f, float seed, float keep){
+  vec2 p = uv * f; vec2 i = floor(p), fr = p - i;
+  float d1 = 9.0, d2 = 9.0; vec2 c1 = vec2(0.0); vec3 r1 = vec3(0.0);
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++){
+    vec2 o = vec2(float(x), float(y)); vec3 r = hash3(i + o, vec2(f), seed);
+    vec2 d = o + 0.14 + r.xy * 0.72 - fr; float dd = dot(d, d);
+    if (dd < d1){ d2 = d1; d1 = dd; c1 = d; r1 = r; } else if (dd < d2) d2 = dd;
+  }
+  float e = sqrt(d2) - sqrt(d1);
+  float on = step(fract(r1.z * 13.7 + r1.x * 3.1), keep);
+  float sh = smoothstep(0.03, 0.13, e) * on;
+  float a = r1.z * 6.2832;
+  float tilt = dot(c1, vec2(cos(a), sin(a))) * (0.2 + 0.5 * fract(r1.x * 5.3));       // 顶面是斜的，每块歪的方向不一样
+  float hh = sh * max(0.36 + 0.36 * fract(r1.z * 7.9) + tilt, 0.08);
+  return vec4(sh, hh, r1.z, fract(r1.x * 9.1 + r1.y * 5.7));
+}
+void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
+  float fine = fbm(uv, vec2(120.0), 3, 71.0), mid = fbm(uv, vec2(22.0), 4, 72.0), big = fbm(uv, vec2(3.0), 4, 73.0);
+  vec2 w = uv + (vec2(fbm(uv, vec2(9.0), 3, 74.0), fbm(uv, vec2(9.0), 3, 75.0)) - 0.5) * 0.014;
+  vec4 A = blk(w, 4.0, 76.0, 0.6);             // 一米多的大石块
+  vec4 B = blk(w + 0.37, 9.0, 77.0, 0.8);      // 半米上下的
+  vec4 C2 = blk(w + 0.71, 21.0, 78.0, 1.0);    // 填缝的碎块
+  float hA = A.y, hB = B.y * 0.6, hC = C2.y * 0.32;
+  float hs = max(hA, max(hB, hC));
+  vec4 S = hA >= hs ? A : (hB >= hs ? B : C2);
+  h = sat(0.03 + hs * 0.95 + ((mid - 0.5) * 0.06 + (fine - 0.5) * 0.03) * S.x);
+  // 花岗岩：每块深浅不一，少数发黄发锈，少数偏青
+  vec3 col = mix(vec3(0.34, 0.34, 0.335), vec3(0.6, 0.59, 0.57), S.z) * (0.84 + 0.3 * (mid - 0.5) + 0.2 * (fine - 0.5));
+  col = mix(col, col * vec3(1.16, 1.0, 0.8), step(0.8, S.w) * 0.8);
+  col = mix(col, col * vec3(0.88, 0.93, 1.0), step(S.w, 0.2) * 0.7);
+  vec4 g1 = vor(uv * 160.0, vec2(160.0), 79.0);
+  col = mix(col, vec3(0.72, 0.7, 0.66), step(0.8, g1.z) * 0.3);          // 长石
+  col = mix(col, vec3(0.13), step(g1.z, 0.1) * 0.5);                     // 黑云母
+  col *= 0.86 + 0.28 * big;
+  // 石头的棱边和石头之间的缝：越低越黑（照不到光）
+  col *= mix(0.3, 1.0, smoothstep(0.1, 0.6, S.x)) * mix(0.42, 1.0, smoothstep(0.06, 0.42, hs));
+  c = col; r = mix(0.98, 0.86, S.x); ao = mix(0.3, 1.0, smoothstep(0.04, 0.45, hs));
+}` };
 // 树皮：竖向开裂的鳞片状沟槽
 KINDS.bark = { tile: 1.1, relief: 0.05, glsl: `
 void surf(vec2 uv, out vec3 c, out float h, out float r, out float ao){
@@ -467,7 +509,7 @@ varying vec3 vAtAx; varying vec3 vAtAy;
 varying vec2 vAtUv;
 #endif
 #ifdef AT_TERRAIN
-attribute vec3 aTer; varying vec3 vAtT;
+attribute vec4 aTer; varying vec4 vAtT;
 #endif
 `;
 const FRAG_PARS = `
@@ -484,8 +526,8 @@ varying vec3 vAtAx; varying vec3 vAtAy;
 varying vec2 vAtUv;
 #endif
 #ifdef AT_TERRAIN
-uniform sampler2D tRA, tRB, tGA, tGB;
-varying vec3 vAtT;
+uniform sampler2D tRA, tRB, tGA, tGB, tKA, tKB;
+varying vec4 vAtT;
 #endif
 uniform sampler2D tFarSh; uniform mat4 uFarShM; uniform vec4 uFarSh; uniform vec4 uCloudSh;
 uniform sampler2D tMidSh; uniform mat4 uMidShM; uniform vec4 uMidSh; uniform vec4 uMidC;
@@ -703,6 +745,39 @@ const SURF_TERRAIN = `
   // —— 碎石 ——
   vec2 su = wp.xz / 2.3 + 0.21;
   vec4 sa = texture2D(tGA, su), sb = texture2D(tGB, su);
+  // —— 石海：石块一块挨一块，把地面盖满（只在石海里才取这几张图）——
+  float bk = 0.0; vec3 kC = vec3(0.0);
+  vec2 kdx = dFdx(wp.xz), kdy = dFdy(wp.xz);
+  vec2 lq = wp.xz + wp.y * vec2(0.31, 0.57); vec2 ldx = dFdx(lq), ldy = dFdy(lq);
+  if (vAtT.w > 0.004) {
+    vec2 ku = wp.xz / 6.1 + 0.13;
+    vec4 ka = textureGrad(tKA, ku, kdx / 6.1, kdy / 6.1), kb = textureGrad(tKB, ku, kdx / 6.1, kdy / 6.1);
+    #ifndef AT_LITE
+    {
+      // 转个角度、换个大小再铺一层，按大尺度噪声在两层之间切换：看不出贴图在重复，石头也有大有小
+      mat2 kr = mat2(0.8, -0.6, 0.6, 0.8);
+      vec2 ku2 = kr * wp.xz / 8.3 + 0.61, k2x = kr * kdx / 8.3, k2y = kr * kdy / 8.3;
+      vec4 ka2 = textureGrad(tKA, ku2, k2x, k2y), kb2 = textureGrad(tKB, ku2, k2x, k2y);
+      kb2.xy = (kb2.xy - 0.5) * kr + 0.5;
+      float km = smoothstep(0.42, 0.58, n3 + (ka2.a - ka.a) * 0.3);
+      ka = mix(ka, ka2, km); kb = mix(kb, kb2, km);
+    }
+    #endif
+    bk = smoothstep(0.2, 0.7, vAtT.w + (ka.a - 0.5) * 0.5 + (n2 - 0.5) * 0.3);
+    kC = ka.rgb * ka.rgb * 2.0 * (diffuseColor.rgb * 0.55 + vec3(0.3, 0.297, 0.29)) * (0.84 + 0.32 * n2);
+    #ifndef AT_LITE
+    {
+      // 石面上的地衣：和散落的大石头用同一张分布图，地上的石块和立起来的石头连成一片
+      float ln = textureGrad(tNoise, lq * 0.19, ldx * 0.19, ldy * 0.19).r * 0.55 + textureGrad(tNoise, lq * 0.83 + 0.4, ldx * 0.83, ldy * 0.83).g * 0.45;
+      float face = smoothstep(0.25, 0.5, ka.a);
+      float lm = smoothstep(0.55, 0.62, ln + (ka.a - 0.5) * 0.12) * face;
+      float lw = smoothstep(0.52, 0.58, textureGrad(tNoise, lq * 0.47 + 0.7, ldx * 0.47, ldy * 0.47).b + (ka.a - 0.5) * 0.1) * face;
+      kC = mix(kC, vec3(0.5, 0.5, 0.44) * (0.75 + 0.5 * ka.a), lw * 0.5);
+      kC = mix(kC, vec3(0.4, 0.4, 0.14) * (0.7 + 0.6 * ka.a), lm * 0.62);
+    }
+    #endif
+    sa.a = mix(sa.a, ka.a, bk); sb = mix(sb, vec4((kb.xy - 0.5) * 1.5 + 0.5, kb.zw), bk);
+  }
   // —— 岩壁（两个侧面 + 顶面投影）——
   vec3 rq = wp / 4.2;
   vec4 ra, rb; vec3 rN;
@@ -732,6 +807,7 @@ const SURF_TERRAIN = `
   float slope = 1.0 - clamp(gWN.y, 0.0, 1.0);
   float rk = smoothstep(0.2, 0.36, slope + (n1 - 0.5) * 0.2 + (n3 - 0.5) * 0.08 + (ra.a - ga.a) * 0.14 * nearK);
   float st = smoothstep(0.3, 0.62, vAtT.x + (sa.a - 0.45) * 0.55 + (n2 - 0.5) * 0.35) * (1.0 - rk);
+  st = mix(st, 1.0 - rk, bk);
   float path = (1.0 - smoothstep(0.55, 1.9 + (n2 - 0.5) * 1.6, abs(vAtT.y) + (ga.a - 0.5) * 0.9)) * vAtT.z * (1.0 - rk);
   vec3 vc = diffuseColor.rgb;
   float dn = n2 * 0.45 + n3 * 0.35 + n1 * 0.2;
@@ -741,7 +817,7 @@ const SURF_TERRAIN = `
   // 踩出来的小路：踩实的黄土，嵌着小石子
   vec3 pathC = vec3(0.36, 0.295, 0.215) * (0.75 + 0.5 * n2) * (0.55 + 0.9 * sa.rgb * sa.rgb) * mix(vec3(1.0), gAlb, 0.5);
   base = mix(base, pathC, path * 0.85);
-  vec3 stC = sa.rgb * sa.rgb * 2.0 * (vc * 0.5 + vec3(0.15, 0.148, 0.142));
+  vec3 stC = mix(sa.rgb * sa.rgb * 2.0 * (vc * 0.5 + vec3(0.15, 0.148, 0.142)), kC, bk);
   base = mix(base, stC, st);
   vec3 rockC = vec3(0.29, 0.285, 0.275) * (0.72 + n2 * 0.35 + n4 * 0.2) * (ra.rgb * ra.rgb * 2.0);
   rockC = mix(rockC, rockC * vec3(1.05, 1.03, 0.82), smoothstep(0.55, 0.8, n1) * 0.6);     // 地衣
@@ -870,7 +946,7 @@ export function surfMat(U, o = {}) {
     uAt: { value: new THREE.Vector4(1 / scale, o.bump === undefined ? 1 : o.bump, o.tex === undefined ? 1 : o.tex, o.macro === undefined ? 0.12 : o.macro) },
     uAt2: { value: new THREE.Vector4(snow, wet, o.trans || 0, o.cut || 0) },
   };
-  if (o.terrain) { const R = tex('rock'), G = tex('gravel'); uni.tRA = { value: R.a }; uni.tRB = { value: R.b }; uni.tGA = { value: G.a }; uni.tGB = { value: G.b }; }
+  if (o.terrain) { const R = tex('rock'), G = tex('gravel'), K = tex('blocks'); uni.tRA = { value: R.a }; uni.tRB = { value: R.b }; uni.tGA = { value: G.a }; uni.tGB = { value: G.b }; uni.tKA = { value: K.a }; uni.tKB = { value: K.b }; }
   mat.userData.at = uni;
   const defs = [
     QUAL.lite ? '#define AT_LITE' : '',
