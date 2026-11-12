@@ -852,12 +852,13 @@ let matId = 0;
  * 做一个带细节贴图的标准材质。
  * o.kind 贴图种类；o.mapping 'world'（默认，静止物体）/ 'local'（会动的物体）/ 'uv'；
  * o.scale 一块贴图多少米；o.bump 法线强度；o.tex 贴图颜色权重；o.macro 大尺度色差；
- * o.snow / o.wet 积雪、雨湿系数（0 关闭）；o.sway 风摆；o.trans 叶片透光；o.terrain 地形专用
+ * o.snow / o.wet 积雪、雨湿系数（0 关闭）；o.sway 风摆；o.trans 叶片透光；o.terrain 地形专用；
+ * o.fastShadow 接收阴影时少取几个点（枝叶、草这类细碎的东西）
  */
 export function surfMat(U, o = {}) {
   U = U || SHARED.U;
   const P = { ...o };
-  for (const k of ['kind', 'mapping', 'scale', 'bump', 'tex', 'macro', 'snow', 'wet', 'sway', 'grass', 'trans', 'terrain', 'plain', 'cut', 'lichen', 'noflip']) delete P[k];
+  for (const k of ['kind', 'mapping', 'scale', 'bump', 'tex', 'macro', 'snow', 'wet', 'sway', 'grass', 'trans', 'terrain', 'plain', 'cut', 'lichen', 'noflip', 'fastShadow']) delete P[k];
   const mat = new THREE.MeshStandardMaterial(P);
   const kind = o.kind || 'rock';
   const T = tex(kind);
@@ -882,6 +883,7 @@ export function surfMat(U, o = {}) {
     o.cut ? '#define AT_CUT' : '',
     o.lichen ? '#define AT_LICHEN' : '',
     o.noflip ? '#define AT_NOFLIP' : '',
+    o.fastShadow ? '#define AT_SHADOW_FAST' : '',
   ].filter(Boolean).join('\n') + '\n';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, U || SHARED.U, uni);      // 有的材质在模块加载时就建了，那时共用参数还没准备好：编译时再取
@@ -922,7 +924,7 @@ export function surfMat(U, o = {}) {
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>\n reflectedLight.indirectDiffuse *= atAO; reflectedLight.indirectSpecular *= atAO * atAO;`)
       .replace('#include <fog_fragment>', `#ifdef USE_FOG\n gl_FragColor.rgb = atFog(gl_FragColor.rgb);\n#endif`);
   };
-  const key = 'at' + [kind, mapping, o.terrain ? 't' : '', snow > 0 ? 's' : '', o.trans ? 'x' : '', o.sway || 0, o.grass ? 'g' : '', o.macro === 0 ? 'm' : '', o.plain ? 'p' : '', o.cut ? 'c' : '', o.lichen ? 'l' : '', o.noflip ? 'n' : '', QUAL.lite ? 'L' : 'H'].join('|');
+  const key = 'at' + [kind, mapping, o.terrain ? 't' : '', snow > 0 ? 's' : '', o.trans ? 'x' : '', o.sway || 0, o.grass ? 'g' : '', o.macro === 0 ? 'm' : '', o.plain ? 'p' : '', o.cut ? 'c' : '', o.lichen ? 'l' : '', o.noflip ? 'n' : '', o.fastShadow ? 'f' : '', QUAL.lite ? 'L' : 'H'].join('|');
   mat.customProgramCacheKey = () => key;
   mat.userData.atId = ++matId;
   return mat;

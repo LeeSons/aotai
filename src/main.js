@@ -58,7 +58,7 @@ const NPC_LINES = [
 const GFX = {
   low:   { name: '流畅', desc: '帧率优先。分辨率最低、关闭抗锯齿和泛光，适合发热或较旧的手机', min: 0.6, max: 1.0, shadow: 1024, msaa: 0 },
   mid:   { name: '均衡', desc: '清晰度和流畅度兼顾，有泛光和镜头光晕，卡顿时自动降低分辨率', min: 0.85, max: 1.5, start: 1.25, shadow: 1024, msaa: 2 },
-  high:  { name: '高清', desc: '全套光影：软阴影、环境光遮蔽、体积光（太阳光柱）、精细材质。帧率不够时会自动降一点分辨率', min: 0.75, max: 2.0, shadow: 2048, msaa: 4 },
+  high:  { name: '高清', desc: '全套光影：软阴影、环境光遮蔽、体积光（太阳光柱）、精细材质。帧率不够时会自动降一点分辨率', min: 0.75, max: 2.0, start: 1.5, shadow: 2048, msaa: 4 },
   ultra: { name: '极致', desc: '按屏幕原生分辨率渲染，不自动降低，光影采样也最密。最清晰也最耗电发热', min: 9, max: 3.0, shadow: 4096, msaa: 4 },
 };
 function loadGfx() {
@@ -83,7 +83,7 @@ class Game {
     // 无敌模式：在暂停菜单里开关，设置会记住
     try { this.god = localStorage.getItem('aotai_god') === '1'; } catch (e) { this.god = false; }
     const GR = gfxRange(this.gfxKey);
-    this.perf = { acc: 0, n: 0, max: GR.max, min: GR.min, pr: GR.start };
+    this.perf = { acc: 0, ts: [], max: GR.max, min: GR.min, pr: GR.start, cap: 9, capT: 0, capDur: 40, wait: 2 };
     R.setPixelRatio(GR.start);
     R.setSize(window.innerWidth, window.innerHeight);
     R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -141,6 +141,7 @@ class Game {
     this.fx = new FX(this.scene);
     this.fauna = new Fauna(this.scene);
     this.terrain = new TerrainManager(this.scene);
+    this.terrain.treeLodR = this.gfxKey === 'ultra' ? [95, 200] : null;      // 最高档：精细的树用得更远
 
     this.audio = new Audio();
     this.ui = new UI(this);
@@ -488,7 +489,7 @@ class Game {
     this.gfxKey = key;
     try { localStorage.setItem('aotai_gfx', key); } catch (e) { /* */ }
     const L = GFX[key], GR = gfxRange(key);
-    Object.assign(this.perf, { acc: 0, n: 0, max: GR.max, min: GR.min, pr: GR.start });
+    Object.assign(this.perf, { acc: 0, ts: [], max: GR.max, min: GR.min, pr: GR.start, cap: 9, capT: 0, capDur: 40, wait: 2 });
     this.renderer.setPixelRatio(GR.start);
     if (this.sun.shadow.mapSize.x !== L.shadow) {
       this.sun.shadow.mapSize.setScalar(L.shadow);
@@ -496,6 +497,7 @@ class Game {
     }
     this.post.setMsaa(L.msaa);
     this.post.setTier(key);
+    this.terrain.treeLodR = key === 'ultra' ? [95, 200] : null; this.terrain.treeDirty = true;
     this.resize();
   }
 
@@ -593,11 +595,13 @@ class Game {
 
   // ===================== 环境 =====================
   hour() { return (this.gameMin / 60) % 24; }
+  // 天黑着没有（按日出日落算，扎营跳时间的时候也能用）：文字描述里提到太阳、星星、远处的景色时用它来分
+  isNight() { const S = SEASONS[this.seasonKey], h = this.hour(); return h < S.sunrise - 0.3 || h > S.sunset + 0.3; }
 
   // 脚下实际感受到的天气；山下时附带主脊上的天气（“山下下雨，山上下雪”）
   wxLabel() {
     const p = this.weather.p, L = this.wxLocal;
-    const same = { icon: p.icon, name: p.name, ridge: null };
+    const same = { icon: p.key === 'clear' && this.night ? '🌙' : p.icon, name: p.name, ridge: null };      // 夜里的晴天不画太阳
     if (L && (this.aboveCloud || 0) > 0.5) return { icon: this.night ? '🌙' : '☀', name: '云层之上', ridge: p.key === 'clear' ? null : p.icon + ' ' + p.name };
     if (!L || L.k > 0.6 || (!p.severe && p.key !== 'fog' && p.key !== 'rain')) return same;
     let icon = '☁', name = '阴';
@@ -635,7 +639,7 @@ class Game {
     this.wxLocal = { k: wxK, rain: (W.p.rainEff || 0) * pK * inK, snow: (W.p.snowEff || 0) * pK * inK, hail: (W.p.hailEff || 0) * hK * inK, fog: W.p.fog * fK * inK };
     if (above > 0.7 && !this.wasAbove) {
       this.wasAbove = true;
-      if (W.p.cloud > 0.5) this.msg(`你钻出了云顶（海拔约 ${Math.round(top / 100) * 100} 米）：头顶一下子晴空万里，脚下是翻滚的云海。${W.p.key !== 'cloudy' && W.p.key !== 'fog' ? `主脊上的${W.p.name}都在云里，云层之上不会下。` : ''}`, 'good');
+      if (W.p.cloud > 0.5) this.msg(`你钻出了云顶（海拔约 ${Math.round(top / 100) * 100} 米）：${this.isNight() ? '头顶一下子满天星斗，脚下是月光里翻滚的云海' : '头顶一下子晴空万里，脚下是翻滚的云海'}。${W.p.key !== 'cloudy' && W.p.key !== 'fog' ? `主脊上的${W.p.name}都在云里，云层之上不会下。` : ''}`, 'good');
     } else if (above < 0.2) this.wasAbove = false;
     // 积雪只在雪线以上（与地表着色的雪线一致）：五月的塘口村不会有冰雪
     const snowLine = SS.snowLine - ((W.p.snowEff || 0) > 0.2 ? 350 : 0);
@@ -764,6 +768,8 @@ class Game {
       this.sun.position.copy(q.v).addScaledVector(ld, 300);
       this.sun.target.position.copy(q.v);
     }
+    // 树按离人的远近换精细度，并挑出阴影相机照得到的那些（人没怎么动、太阳没怎么转时这一步什么都不做）
+    this.terrain.updateTrees(P.x, P.y, P.z, this.sun.shadow.intensity > 0 ? this.sun : null, SHADOW_HALF);
     // 材质共用的大气参数：主光方向、朝太阳看时雾里的暖光、谷底的霾、水洼涟漪
     {
       const WU = this.wxU, day = sy > -0.03;
@@ -838,16 +844,26 @@ class Game {
   frame() {
     const raw = this.clock.getDelta();
     let dt = Math.min(raw, 0.05);
-    // 自适应分辨率：帧率低时自动降低渲染分辨率
+    // 自适应分辨率：目标是稳在接近 60 帧。掉到 54 帧以下就按差多少一步降到位，并记住“这个倍率带不动”，隔一阵才再往上试；
+    // 帧率富余时一点点往回加。个别卡一下的帧（加载地块）不算数
     const P = this.perf;
-    if (raw < 0.25) { P.acc += raw; P.n++; }
-    if (P.acc > 2.5) {
-      const avg = P.acc / P.n;
+    if (raw < 0.25) { P.acc += raw; P.ts.push(raw); }
+    if (P.acc > 1.6 && P.ts.length >= 24) {
+      const ts = P.ts.sort((a, b) => a - b), med = ts[ts.length >> 1];
+      let sum = 0, cnt = 0; for (const v of ts) if (v < med * 2.5) { sum += v; cnt++; }
+      const avg = sum / cnt;
       let npr = P.pr;
-      if (avg > 1 / 42 && P.pr > P.min) npr = Math.max(P.min, P.pr - 0.15);
-      else if (avg < 1 / 58 && P.pr < P.max) npr = Math.min(P.max, P.pr + 0.1);
+      P.capT -= P.acc; if (P.wait > 0) P.wait--;
+      if (avg > 1 / 54 && P.pr > P.min) {
+        npr = Math.max(P.min, Math.min(P.pr - 0.05, P.pr * Math.max(0.8, Math.sqrt((1 / 58) / avg))));      // 像素数大致和耗时成正比
+        P.cap = P.pr - 0.05; P.capT = P.capDur; P.capDur = Math.min(240, P.capDur * 2); P.wait = 3;
+      } else if (avg < 1 / 58.5 && P.pr < P.max && !P.wait) {
+        const lim = P.capT > 0 ? Math.min(P.max, P.cap) : P.max;
+        if (P.pr + 0.045 < lim) { npr = Math.min(lim, P.pr + 0.05); P.wait = 2; } else if (P.capT <= 0) P.capDur = 40;
+      }
+      npr = Math.round(npr * 100) / 100;
       if (npr !== P.pr) { P.pr = npr; this.renderer.setPixelRatio(npr); this.resize(); }
-      P.acc = 0; P.n = 0;
+      P.acc = 0; P.ts.length = 0;
     }
     this.time += dt;
     if (this.postEnv) this.postEnv.dt = raw;
@@ -1166,7 +1182,7 @@ class Game {
     this.world.npcs.forEach((n, i) => {
       const d = Math.hypot(P.x - n.x, P.z - n.z);
       if (d < 4 && d < bd) { bd = d; best = { type: 'npc', npc: n, label: n.ranger ? '与管理站工作人员交谈' : '与驴友交谈' }; }
-      const m = this.npcMeshes[i]; if (m && d < 20) m.rotation.y = Math.atan2(P.x - n.x, P.z - n.z);
+      const m = this.npcMeshes[i]; if (m) { m.visible = d < 450; if (d < 20) m.rotation.y = Math.atan2(P.x - n.x, P.z - n.z); }      // 远处的路人不画（一个人五十多个零件）
     });
     if (this.fire && this.fire.left > 0) {
       const d = Math.hypot(P.x - this.fire.x, P.z - this.fire.z);
@@ -1206,7 +1222,7 @@ class Game {
     const day = Math.floor(this.gameMin / 1440) + 1;
     this.ui.titleCard(`第 ${day} 天`, w.name, `海拔 ${w.alt} m`, w.minor ? '' : w.desc);
     if (w.end) { this.victory(); return; }
-    if (w.name === '导航架') this.msg('你登上了鳌山之巅。真正的鳌太主脊在眼前铺展开来——而这只是开始。', 'good');
+    if (w.name === '导航架') this.msg(`你登上了鳌山之巅。真正的鳌太主脊${this.fogK > 0.5 ? '就藏在前面的浓雾里' : this.isNight() ? '就横在前面的夜色里' : '在眼前铺展开来'}——而这只是开始。`, 'good');
     if (w.name === '拔仙台') { s.mental = Math.min(100, s.mental + 15); this.msg('你站在了太白之巅，海拔 3771 米。眼泪不知道什么时候流了下来。接下来，是同样危险的下撤。', 'good'); }
     if (w.water !== undefined && !w.safe && this.world.waterState[i] === false) setTimeout(() => this.msg(`${w.name}的水源好像干涸了……`, 'warn'), 3000);
     if (!w.minor) this.saveCheckpoint();
@@ -1933,7 +1949,7 @@ class Game {
           const more = ['fleece', 'down', 'hat'].filter(id => inv.has(id) && !inv.worn.has(id));
           if (more.length) {
             dressed = true; for (const id of more) inv.worn.add(id); pl.setGear(inv);
-            notes.add(`${sleepMode ? '半夜冷醒，你摸黑把' : '坐着坐着冷了，你把'}${more.map(id => ITEMS[id].name).join('、')}都穿上了。`);
+            notes.add(`${sleepMode ? (this.isNight() ? '半夜冷醒，你摸黑把' : '睡到一半冷醒，你把') : '坐着坐着冷了，你把'}${more.map(id => ITEMS[id].name).join('、')}都穿上了。`);
             th = s.thermal(env);
           }
         }
@@ -1951,7 +1967,7 @@ class Game {
         s.update(1, env, { msg: (t) => notes.add(t), gearChanged: () => pl.setGear(inv), onExpire: (kk) => { if (kk === 'tick') this.tickDropped(s, (t) => notes.add(t)); if (kk === 'incub') { s.addStatus('fever', { t: 520 }); notes.add('你在高烧中醒来，浑身发冷、关节酸痛……想起一个多星期前那只蜱虫。'); } } });
         if (job && job.step) job.step(env, i);
         // 帐篷被撕裂
-        if (tentMode && !inv.tentDamaged && inv.has('tent3') && !inv.has('tent4') && this.windLocal >= 8 && this.rng() < 0.02) { inv.tentDamaged = true; torn = true; }
+        if (tentMode && !inv.tentDamaged && inv.has('tent3') && !inv.has('tent4') && this.windLocal >= 8 && this.rng() < 0.02) { inv.tentDamaged = true; torn = this.isNight() ? 'night' : 'day'; }
         if (s.health <= 0) { woke = 'dead'; break; }
         if (sleepMode && i > 20 && (s.core < 34.6 || s.health < 15 || s.hydration < 3)) { woke = s.core < 34.6 ? '你被冻醒了，浑身止不住地发抖……' : '你在剧烈的不适中醒来。'; break; }
         if (job && i > 3 && ((s.core < 34.8 && !job.warm) || s.health < 15)) { woke = '你冷得受不了，只好提前停了下来。'; break; }
@@ -1963,7 +1979,7 @@ class Game {
       const qName = !sleepMode ? '' : avgQ > 0.9 ? '不错' : avgQ > 0.65 ? '一般' : avgQ > 0.4 ? '很差' : '几乎没睡着';
       let html = job ? job.done() : `<p>${sleepMode ? `你睡了 ${Math.round(n / SEC_PER_GAME_HOUR * 10) / 10} 小时。睡眠质量：<b>${qName}</b>。` : `你休息了 ${hours} 小时。`}</p>`;
       if (woke) html += `<p style="color:#e0483c">${woke}</p>`;
-      if (torn) html += `<p style="color:#e0483c">夜里的狂风把你的三季帐篷撕开了一道大口子！之后的夜晚它将很难挡风挡雨。</p>`;
+      if (torn) html += `<p style="color:#e0483c">${torn === 'night' ? '夜里的狂风' : '一阵狂风'}把你的三季帐篷撕开了一道大口子！之后的夜晚它将很难挡风挡雨。</p>`;
       for (const t of [...notes].slice(-4)) html += `<p class="muted">${t}</p>`;
       const h = this.hour();
       html += `<p class="muted">现在是第 ${Math.floor(this.gameMin / 1440) + 1} 天 ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}，天气：${this.wxLabel().name}，气温 ${fmt(this.airTemp, 0)}℃。</p>`;
@@ -2039,13 +2055,14 @@ class Game {
     const s = this.surv;
     const score = this.dangerCount;
     const rating = s.health > 70 && score < 6 ? '老练的山野行者' : s.health > 40 ? '幸存者' : '九死一生';
+    const dark = this.isNight(), cloudy = this.weather.p.cloud > 0.5;
     const incub = s.status.incub ? `<p style="color:#e8913a">下山后第 ${Math.max(1, Math.ceil(s.status.incub.t / (24 * SEC_PER_GAME_HOUR)))} 天，你突然发起高烧、浑身酸痛。好在你想起了腿上那个蜱虫叮过的红包，告诉了医生——确诊森林脑炎，住院两周后康复。</p>` : '';
     setTimeout(() => {
       this.ui.hide('hud');
       this.ui.showEnd({
         kicker: '你 活 着 走 了 出 来', title: '生 还', color: '#d8b46a', cause: `评价：${rating}`,
         stats: this.statsList(),
-        text: `<p>炊烟、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊隐没在翻滚的云层里，像从来没有存在过。</p>${incub}${godRun ? `<p style="color:#d8b46a">这次开了无敌模式，不计入通关次数（已真正通关 ${wins} 次）。下一次出发的初始资金：¥${nextMoney}</p>` : `<p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p>`}<p class="muted">你很幸运。现实中的鳌太线自 2018 年起已被禁止穿越，请不要以身犯险。</p>`,
+        text: `<p>${dark ? '灯火' : '炊烟'}、狗叫、柏油路——你回到了人间。回头望去，鳌太主脊${dark ? '隐没在夜色里，像从来没有存在过' : cloudy ? '隐没在翻滚的云层里，像从来没有存在过' : '远远地横在天边，安静得像什么都没有发生过'}。</p>${incub}<p style="color:#e0483c;border:1px solid rgba(224,72,60,.55);border-radius:6px;padding:8px 12px">处罚通知：你因非法穿越鳌太线，被处以罚款 2 万元、行政拘留 7 天。</p>${godRun ? `<p style="color:#d8b46a">这次开了无敌模式，不计入通关次数（已真正通关 ${wins} 次）。下一次出发的初始资金：¥${nextMoney}</p>` : `<p style="color:#d8b46a">这是你第 ${wins} 次成功穿越。下一次出发的初始资金：¥${nextMoney}</p>`}<p class="muted">你很幸运。穿越鳌太线是违法行为：现实中这条线自 2018 年起已全线禁止穿越，请不要以身犯险。（罚款和拘留只是提示，不影响游戏里的资金。）</p>`,
         buttons: [{ label: '再走一次', big: true, action: () => { this.ui.hide('screen-end'); this.state = 'title'; this.toSeason(); } }, { label: '返回标题', action: () => this.toTitle() }],
       });
     }, 4000);
@@ -2131,18 +2148,18 @@ class Game {
     this.sky.mesh.position.copy(this.camera.position);
     // 远距离地形阴影图：隔几帧重画一次（太阳走得慢，山影不需要每帧更新）
     this.frameNo++;
-    if (this.postEnv && this.postEnv.farK > 0 && (this.frameNo % (QUAL.lite ? 8 : 3) === 0 || !this.farSh.ready)) {
+    if (this.postEnv && this.postEnv.farK > 0 && (this.frameNo % (QUAL.lite ? 8 : 5) === 0 || !this.farSh.ready)) {
       try { this.farSh.update(this.renderer, this.scene, this.wxU.uSunDir.value, this.camera.position); }
       catch (e) { console.error('[gfx] 远距离阴影图出错，已关闭', e); this.postEnv.farK = 0; this.wxU.uFarSh.value.z = 0; this.farSh.update = () => {}; }
     }
-    // 中距离阴影图：走出十来米、太阳转了一度多、或者隔两秒（新的树加载进来了）才重画
+    // 中距离阴影图：走出十来米、太阳转了一度多、或者有新的树和石头加载进来了才重画（另外每十秒兜底重画一次）
     const MS = this.midSh;
     if (MS && this.postEnv && this.postEnv.farK > 0) {
       const st = this.midState, ld = this.wxU.uSunDir.value, P = this.state === 'play' ? this.player.pos : this.camera.position;
       st.t += this.postEnv.dt || 0.016;
       this.wxU.uMidC.value.set(P.x, P.y, P.z, SHADOW_HALF * 0.9);      // “从多远开始接手”跟着人走（近处那张阴影图也是跟着人走的）
-      if (!MS.ready || st.t > 2 || (st.t > 0.25 && (st.c.distanceToSquared(P) > 144 || st.d.dot(ld) < 0.99978))) {
-        st.t = 0; st.c.copy(P); st.d.copy(ld);
+      if (!MS.ready || st.t > 10 || (st.t > 0.25 && (st.c.distanceToSquared(P) > 144 || st.d.dot(ld) < 0.99978)) || (st.t > 0.6 && st.ver !== this.terrain.objVersion)) {
+        st.t = 0; st.c.copy(P); st.d.copy(ld); st.ver = this.terrain.objVersion;
         try { this.terrain.withLowLod(() => MS.update(this.renderer, this.scene, ld, P)); }
         catch (e) { console.error('[gfx] 中距离阴影图出错，已关闭', e); this.midSh = null; this.wxU.uMidSh.value.z = 0; }
       }

@@ -63,6 +63,33 @@ export function merge(list, groups = null) {
   return m;
 }
 
+// 给不带索引的几何体建索引：位置 / 法线 / 颜色 / uv 全都相同的顶点合成一个，顶点着色器少跑一半到几倍。
+// material groups 原样保留（索引的个数和原来的顶点数一样多）
+export function weld(geo) {
+  if (geo.index) return geo;
+  const names = Object.keys(geo.attributes), n = geo.attributes.position.count;
+  const map = new Map(), idx = new Uint32Array(n), keep = [];
+  for (let i = 0; i < n; i++) {
+    let key = '';
+    for (const nm of names) { const a = geo.attributes[nm], s = a.itemSize, arr = a.array; for (let k = 0; k < s; k++) key += Math.round(arr[i * s + k] * 2e4) + ','; }
+    let j = map.get(key);
+    if (j === undefined) { j = keep.length; map.set(key, j); keep.push(i); }
+    idx[i] = j;
+  }
+  const out = new THREE.BufferGeometry();
+  for (const nm of names) {
+    const a = geo.attributes[nm], s = a.itemSize, arr = new Float32Array(keep.length * s);
+    for (let j = 0; j < keep.length; j++) for (let k = 0; k < s; k++) arr[j * s + k] = a.array[keep[j] * s + k];
+    out.setAttribute(nm, new THREE.BufferAttribute(arr, s));
+  }
+  out.setIndex(new THREE.BufferAttribute(keep.length > 65535 ? idx : new Uint16Array(idx), 1));
+  for (const g of geo.groups) out.addGroup(g.start, g.count, g.materialIndex);
+  if (geo.boundingSphere) out.boundingSphere = geo.boundingSphere.clone(); else out.computeBoundingSphere();
+  if (geo.boundingBox) out.boundingBox = geo.boundingBox.clone();
+  geo.dispose();
+  return out;
+}
+
 // 折痕法线：夹角小于 angle 的相邻面共用平滑法线，大于的保留硬边（返回不带索引的几何体）
 export function crease(geo, angle = 40) {
   const g = geo.index ? geo.toNonIndexed() : geo;

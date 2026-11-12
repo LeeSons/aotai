@@ -618,7 +618,7 @@ export class FarShadow {
 // 替换 three 自带的阴影采样：先找遮挡物的平均深度，再按“遮挡物离得越远，影子边缘越虚”来过滤。
 // 树梢投在地上的影子是虚的，脚边的影子是实的。frustum：阴影相机覆盖的宽、高、深（米）。
 let stockShadowChunk = null;
-export function installSoftShadows(frustum, { taps = 16, searchTaps = 8 } = {}) {
+export function installSoftShadows(frustum, { taps = 16, searchTaps = 8, fastTaps = 4 } = {}) {
   const src = stockShadowChunk || THREE.ShaderChunk.shadowmap_pars_fragment;
   stockShadowChunk = src;
   const a = src.indexOf('float getShadow('), b = src.indexOf('vec2 cubeToUV');
@@ -648,26 +648,43 @@ export function installSoftShadows(frustum, { taps = 16, searchTaps = 8 } = {}) 
 		dz = clamp( dz, vec2( - maxSlope ), vec2( maxSlope ) );
 		float zr = sc.z + shadowBias - ( abs( dz.x ) * texel.x + abs( dz.y ) * texel.y ) * 0.35;
 		float phi = atIGN( gl_FragCoord.xy ) * 6.2831853;
-		vec2 searchR = ( 0.5 * shadowRadius ) / AT_FRUSTUM;
-		float blk = 0.0, nb = 0.0;
-		for ( int i = 0; i < ${searchTaps}; i ++ ) {
-			vec2 o = atVogel( i, ${searchTaps}, phi ) * searchR;
-			float d = unpackRGBAToDepth( texture2D( shadowMap, sc.xy + o ) );
-			float z = zr + dot( o, dz );
-			if ( d < z ) { blk += d; nb += 1.0; }
-		}
-		if ( nb < 0.5 ) return 1.0;
-		float avg = blk / nb;
-		float distM = max( zr - avg, 0.0 ) * AT_DEPTH;
-		float penM = clamp( distM * 0.03 * shadowRadius, 0.03 * shadowRadius, 0.7 * shadowRadius );
-		vec2 filtR = max( vec2( penM ) / AT_FRUSTUM, texel * 1.25 );
 		float lit = 0.0;
-		for ( int i = 0; i < ${taps}; i ++ ) {
-			vec2 o = atVogel( i, ${taps}, phi + 1.7 ) * filtR;
-			float d = unpackRGBAToDepth( texture2D( shadowMap, sc.xy + o ) );
-			lit += step( zr + dot( o, dz ), d );
+		#ifdef AT_SHADOW_FAST
+		// 枝叶、草：本身就是细碎的东西，影子虚实看不出来，取 ${fastTaps} 个点就够（它们层层叠叠，是全屏里采样次数最多的）
+		{
+			vec2 fr = ( 0.16 * shadowRadius ) / AT_FRUSTUM;
+			for ( int i = 0; i < ${fastTaps}; i ++ ) {
+				vec2 o = atVogel( i, ${fastTaps}, phi ) * fr;
+				lit += step( zr + dot( o, dz ), unpackRGBAToDepth( texture2D( shadowMap, sc.xy + o ) ) );
+			}
+			lit /= float( ${fastTaps} );
 		}
-		lit /= float( ${taps} );
+		#else
+		{
+			vec2 searchR = ( 0.5 * shadowRadius ) / AT_FRUSTUM;
+			float blk = 0.0, nb = 0.0;
+			for ( int i = 0; i < ${searchTaps}; i ++ ) {
+				vec2 o = atVogel( i, ${searchTaps}, phi ) * searchR;
+				float d = unpackRGBAToDepth( texture2D( shadowMap, sc.xy + o ) );
+				float z = zr + dot( o, dz );
+				if ( d < z ) { blk += d; nb += 1.0; }
+			}
+			if ( nb < 0.5 ) return 1.0;
+			float avg = blk / nb;
+			float distM = max( zr - avg, 0.0 ) * AT_DEPTH;
+			float penM = clamp( distM * 0.03 * shadowRadius, 0.03 * shadowRadius, 0.7 * shadowRadius );
+			vec2 filtR = max( vec2( penM ) / AT_FRUSTUM, texel * 1.25 );
+			// 四周全被挡住、而且过滤范围不超出刚才找遮挡物的范围：这一点在影子深处，不用再细算
+			if ( nb < ${searchTaps}.0 - 0.5 || filtR.x > searchR.x ) {
+				for ( int i = 0; i < ${taps}; i ++ ) {
+					vec2 o = atVogel( i, ${taps}, phi + 1.7 ) * filtR;
+					float d = unpackRGBAToDepth( texture2D( shadowMap, sc.xy + o ) );
+					lit += step( zr + dot( o, dz ), d );
+				}
+				lit /= float( ${taps} );
+			}
+		}
+		#endif
 		// 阴影图边缘渐渐淡到全亮，看不出阴影范围的方框
 		vec2 e = min( sc.xy, 1.0 - sc.xy );
 		lit = mix( 1.0, lit, smoothstep( 0.0, 0.04, min( e.x, e.y ) ) );

@@ -62,6 +62,36 @@ const OMEN_LOW = {
   whiteout: '山顶被一团翻滚的白云吞没了。林子里只是风紧雪小，主脊上正刮着白毛风。',
 };
 
+// 夜里看不见太阳、云的颜色和远处的山：同一种天气换一套说法（没列出来的，白天那句夜里也说得通）
+const OMEN_NIGHT = {
+  clear: '云层散开了，月光洒了下来，星星一颗颗亮了起来。',
+  cloudy: '星星一颗接一颗被云吞没了，风里带着一股寒意。',
+  fog: '夜色里，雾气正从山谷漫上山脊……连几步外的石头都开始模糊了！',
+  rain: '星星不知什么时候全不见了，空气里有了雨的味道。',
+  storm: '远处传来闷雷，天边一下一下地闪着电光——雷暴要来了！远离山顶和高点！',
+  snow: '气温断崖式下跌，黑暗里开始飘起雪花——暴风雪正在逼近！',
+  whiteout: '狂风卷起地上的积雪劈头盖脸地打过来，几步之外什么都看不见了——白毛风！',
+};
+const SUDDEN_NIGHT = {
+  clear: '云雾像被一只手扯开，头顶忽然露出了满天星斗。',
+  fog: '一转身，雾就把你吞没了——几秒钟前头顶还看得见星星！',
+  rain: '天说变就变，冰冷的雨点从黑暗里砸了下来！',
+  storm: '没有任何预兆，一道闪电劈开了夜空——雷暴来了！',
+  hail: '黑暗里突然噼里啪啦地砸下来冰雹！',
+  whiteout: '风雪骤起，四周瞬间一片混沌，连自己的脚都看不清！',
+  cloudy: '不知从哪里涌来的云把月亮和星星都遮住了。',
+};
+const OMEN_LOW_NIGHT = {
+  storm: '远处山顶滚过闷雷，电光一下下照亮了山脊的轮廓——主脊上在下雷暴。林子里只是一阵急雨，但上了林线就不是这样了。',
+  hail: '远处坡上传来冰雹砸落的沙沙声——山上在下冰雹。林下只落下几颗冰渣。',
+  sleet: '下起了冷雨，雨里夹着零星的雪粒——林线以上这会儿应该是雨夹雪了。',
+  snow: '气温降了下来，冷雨淅淅沥沥。这个温度，山上肯定在下雪。',
+  whiteout: '山上传来一阵阵呼啸，像有什么东西在嚎。林子里只是风紧雪小，主脊上正刮着白毛风。',
+};
+// 晨昏：太阳在地平线附近，既没有阳光也没有星星
+const OMEN_DUSK = { clear: '云层散开了，露出一片清朗的天。' };
+const SUDDEN_DUSK = { clear: '云雾像被一只手扯开，头顶露出了一片清朗的天。', cloudy: '不知从哪里涌来的云把天遮了个严实。' };
+
 function pickWeighted(w, r) {
   let s = 0; for (const k in w) s += w[k];
   let v = r * s;
@@ -102,6 +132,8 @@ export class Weather {
   // 云顶至少比拔仙台（3767 米）高一截：主脊上走路时天气照旧，只有飞上去才会钻出云顶
   sampleTop(k) { const r = CLOUD_TOP[k] || CLOUD_TOP.cloudy; return Math.max(3900, Math.round(lerp(r[0], r[1], this.rng()) + (TOP_SEASON[this.seasonKey] || 0))); }
   restore(s) { Object.assign(this, s); this.recompute(); }
+  // 现在是白天（0）、晨昏（1）还是夜里（2）：天气变化的文字描述跟着换
+  dayPhase(hour) { const S = this.S; return hour > S.sunrise + 0.4 && hour < S.sunset - 0.3 ? 0 : hour > S.sunrise - 0.5 && hour < S.sunset + 0.5 ? 1 : 2; }
 
   choose(hour, alt) {
     const sev = this.diff.weather;
@@ -166,13 +198,18 @@ export class Weather {
         this.next = n; this.topNext = this.sampleTop(n); this.blend = 0;
         this.blendRate = sudden ? 1 / (4 + this.rng() * 3) : 1 / (16 + this.rng() * 10);
         if (onMessage) {
-          if (localK < 0.6 && OMEN_LOW[n]) onMessage(OMEN_LOW[n], 'warn');
-          else if (this.wasFake && SEVERE.includes(n)) onMessage('刚才的晴朗只是风暴的间隙！' + (OMEN[n] || ''), 'crit');
-          else if (sudden) onMessage('天气突变！' + SUDDEN[n], SEVERE.includes(n) || n === 'fog' ? 'crit' : 'info');
-          else if (this.rng() < 0.85) onMessage(OMEN[n], SEVERE.includes(n) || n === 'fog' ? 'danger' : 'info');
+          const ph = this.dayPhase(hour);
+          const say = (day, dusk, night) => (ph === 2 && night[n]) || (ph === 1 && dusk[n]) || day[n] || '';
+          let sud = say(SUDDEN, SUDDEN_DUSK, SUDDEN_NIGHT);
+          if (n === 'hail' && ph !== 2 && this.cur !== 'clear') sud = '说来就来，冰雹噼里啪啦地砸了下来！';      // 本来就不是晴天，谈不上“晴空里”
+          if (localK < 0.6 && OMEN_LOW[n]) onMessage(say(OMEN_LOW, {}, OMEN_LOW_NIGHT), 'warn');
+          else if (this.wasFake && SEVERE.includes(n)) onMessage('刚才的晴朗只是风暴的间隙！' + say(OMEN, OMEN_DUSK, OMEN_NIGHT), 'crit');
+          else if (sudden) onMessage('天气突变！' + sud, SEVERE.includes(n) || n === 'fog' ? 'crit' : 'info');
+          else if (this.rng() < 0.85) onMessage(say(OMEN, OMEN_DUSK, OMEN_NIGHT), SEVERE.includes(n) || n === 'fog' ? 'danger' : 'info');
         }
         this.wasFake = false;
-        if (this.cur === 'rain' || this.cur === 'storm' || this.cur === 'sleet') { if ((n === 'clear' || n === 'cloudy') && hour > 7 && hour < 18) this.rainbowPending = true; }
+        // 彩虹要有太阳：天黑前后不出
+        if (this.cur === 'rain' || this.cur === 'storm' || this.cur === 'sleet') { if ((n === 'clear' || n === 'cloudy') && hour > this.S.sunrise + 0.6 && hour < this.S.sunset - 0.8) this.rainbowPending = true; }
       }
       let dur = lerp(WX[n].dur[0], WX[n].dur[1], this.rng()) * SEC_PER_GAME_HOUR;
       if (this.fakeClear && n === 'clear') { dur = (0.35 + this.rng() * 0.5) * SEC_PER_GAME_HOUR; this.fakeClear = false; this.forceSevere = true; this.wasFake = true; }

@@ -317,8 +317,9 @@ export class Hazards {
     const alt = yToAlt(P.y);
     const exposed = ['ridge', 'cliff', 'stone', 'pillars', 'meadow'].includes(ti.type) && !game.shelterNow && !game.sleeping;
 
-    for (const t of this.takins) if (Math.abs(t.x - P.x) < 250) t.update(dt, game);
-    for (const s of this.snakes) if (Math.abs(s.x - P.x) < 60) s.update(dt, game);
+    // 远处的羚牛和蛇不更新、也不画（一头羚牛二十多个零件，全线十来头）
+    for (const t of this.takins) { const dx = Math.abs(t.x - P.x); if (dx < 250) t.update(dt, game); t.mesh.visible = dx < 700 && Math.abs(t.z - P.z) < 700; }
+    for (const s of this.snakes) { const dx = Math.abs(s.x - P.x); if (dx < 60) s.update(dt, game); s.mesh.visible = dx < 160 && Math.abs(s.z - P.z) < 160; }
     this.rocks = this.rocks.filter(r => { const alive = r.update(dt, game); if (!alive) r.dispose(this.scene); return alive; });
 
     // ---- 阵风（姿态决定能否站稳）----
@@ -395,7 +396,7 @@ export class Hazards {
     this.qteCool -= dt;
     const hour = game.hour();
     const frost = (hour > 3.5 && hour < 9.5) && alt > 3150 && game.airTemp < 1.5;
-    if (frost && !this.frostMsg && pl.onRock) { this.frostMsg = true; game.msg('清晨的岩石表面结了一层薄薄的霜，脚下像抹了油。', 'warn'); }
+    if (frost && !this.frostMsg && pl.onRock) { this.frostMsg = true; game.msg(`${hour < season().sunrise - 0.3 ? '夜里' : '清晨'}的岩石表面结了一层薄薄的霜，脚下像抹了油。`, 'warn'); }
     if (!frost) this.frostMsg = false;
     if (!game.qte && !game.god && this.qteCool <= 0 && pl.moving && pl.onGround && pl.ko <= 0 && !pl.sliding) {
       const stanceQ = pl.stance === 'prone' ? 0.05 : pl.stance === 'crouch' ? 0.4 : 1;
@@ -474,7 +475,8 @@ export class Hazards {
   eerie(game) {
     const s = game.surv, a = game.audio;
     const r = Math.floor(this.rng() * 5);
-    if (r === 0) { a.voice(); s.mental -= 4; game.msg('雾里好像有人在喊……“喂——”声音忽远忽近，分不清从哪个方向传来。', 'warn'); }
+    // 这类怪事在浓雾里和黑夜里都会发生：没有雾的夜里就不说“雾里”
+    if (r === 0) { a.voice(); s.mental -= 4; game.msg(`${game.fogK > 0.5 ? '雾里' : '黑暗里'}好像有人在喊……“喂——”声音忽远忽近，分不清从哪个方向传来。`, 'warn'); }
     else if (r === 1) { a.footBehind(); s.mental -= 5; game.msg('身后传来踩在碎石上的脚步声，一步、两步……你猛地回头，什么也没有。', 'warn'); }
     else if (r === 2) { a.bell(); s.mental -= 3; game.msg('不知哪里传来一声悠长的钟声。附近根本没有寺庙。', 'warn'); }
     else if (r === 3) { a.rockRoll(); s.mental -= 2; game.msg('远处的石海里传来一阵石块滚落的声音，然后又归于死寂。', 'info'); }

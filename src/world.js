@@ -1022,6 +1022,13 @@ export class World {
   }
 
   update(dt, t, wind, camPos) {
+    // 全线三十来个地标的建筑、路牌都在场景里：离得太远、在屏幕上只剩几个像素的先不画（每个物件按自己的大小定多远算“太远”）
+    const kids = this.group.children;
+    if (!this._cull || this._cull.length !== kids.length) {
+      const box = new THREE.Box3(), sph = new THREE.Sphere();
+      this._cull = kids.map(o => { box.setFromObject(o); box.getBoundingSphere(sph); return { o, x: sph.center.x, y: sph.center.y, z: sph.center.z, far: Math.max(260, sph.radius * 200) }; });
+    }
+    for (const k of this._cull) { const dx = k.x - camPos.x, dy = k.y - camPos.y, dz = k.z - camPos.z; k.o.visible = dx * dx + dy * dy + dz * dz < k.far * k.far; }
     // 布条随风飘
     const ang = Math.atan2(wind.y, wind.x);
     const str = Math.min(1, wind.length() / 8);

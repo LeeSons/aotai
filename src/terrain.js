@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { ROUTE, routeZ, segIndexAt, altToY, yToAlt, ROUTE_LENGTH, WORLD } from './data.js';
 import { makeNoise, hash2, mulberry32, clamp, smoothstep, lerp } from './noise.js';
 import { surfMat, tex, QUAL } from './materials.js';
-import { merge, paint, crease, puff, displace, xf, rockGeo } from './geo.js';
+import { merge, weld, paint, crease, puff, displace, xf, rockGeo } from './geo.js';
 
 const N = makeNoise(20181026);
 const N2 = makeNoise(777);
@@ -277,13 +277,13 @@ export function initTerrainAssets(U) {
   MAT.rock = surfMat(U, { kind: 'rock', vertexColors: true, roughness: 1, scale: 3.4, bump: 1.6, macro: 0.25, lichen: 1 });
   MAT.bark = surfMat(U, { kind: 'bark', vertexColors: true, roughness: 1, scale: 1.0, bump: 1.3, sway: 0.05, snow: 0.5, macro: 0.2 });
   // 树冠内核和远处的简化树冠：实心的一团，带树叶贴图
-  MAT.leaf = surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4 });
+  MAT.leaf = surfMat(U, { kind: 'leaf', vertexColors: true, roughness: 1, scale: 1.25, bump: 1.6, sway: 0.05, trans: 0.9, macro: 0.4, fastShadow: true });
   // 枝叶面片：贴图自带叶片轮廓（镂空），法线不随正反面翻转；阴影也按轮廓镂空
-  const cardMat = (kind) => surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.78, side: THREE.DoubleSide, sway: 0.05, trans: 1.0, noflip: true, map: tex(kind).a, alphaTest: 0.34, alphaToCoverage: !QUAL.lite });
+  const cardMat = (kind) => surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.78, side: THREE.DoubleSide, sway: 0.05, trans: 1.0, noflip: true, map: tex(kind).a, alphaTest: 0.34, alphaToCoverage: !QUAL.lite, fastShadow: true });
   MAT.spray = cardMat('spray'); MAT.bough = cardMat('bough');
   MAT.tree = MAT.leaf;
-  MAT.grass = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.82, side: THREE.DoubleSide, sway: 0.35, grass: true, trans: 1.0, snow: 0.8 });
-  MAT.flower = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.6, side: THREE.DoubleSide, sway: 0.3, grass: true, trans: 0.8, emissive: 0x0a0a0a });
+  MAT.grass = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.82, side: THREE.DoubleSide, sway: 0.35, grass: true, trans: 1.0, snow: 0.8, fastShadow: true });
+  MAT.flower = surfMat(U, { kind: 'ground', plain: true, tex: 0, bump: 0, macro: 0, vertexColors: true, roughness: 0.6, side: THREE.DoubleSide, sway: 0.3, grass: true, trans: 0.8, emissive: 0x0a0a0a, fastShadow: true });
   // 岩石：三种形状 × 两档细节。归一化成“半径 1、顶高 0.75”，和碰撞用的椭球对得上
   GEO.rocks = [0, 1, 2].map(s => [2, 1].map(detail => {
     const g = rockGeo(100 + s * 17, detail, { cuts: 11 + s * 2, rough: 0.2 + s * 0.04 });
@@ -329,7 +329,7 @@ function buildGrassGeo() {
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
     g.computeBoundingSphere();
-    return g;
+    return weld(g);
   };
   // 脚下这一块用密的草丛，周围八块用稀一半的（三角面数差一倍多，远看分不出来）
   GEO.grassLo = mk(9, 2, 77);
@@ -512,17 +512,33 @@ function boughPair(base, ang, len, pitch, color, tone, r, finK = 0.5, droop = 0.
   return out;
 }
 const HI_MATS = {};
-const HI_DIST = () => (QUAL.lite ? 0 : 1);      // 精细的树用到第几圈地块：手机只用脚下这一块
+const HI_DIST = () => (QUAL.lite ? 0 : 1);      // 精细的石头用到第几圈地块：手机只用脚下这一块
+// 树按“每一棵离人多远”分三档：精细（树干 + 全部枝叶面片）/ 中等（面片减半、树干简化）/ 简化（几团叶子）。[精细到多少米, 中等到多少米]
+const TREE_LOD = () => (QUAL.lite ? [34, 80] : [58, 135]);
+const lodGeo = (kind, lod) => GEO[kind][lod === 0 ? 0 : lod === 1 ? 2 : 1];
+const lodMat = (kind, lod) => (lod < 2 ? HI_MATS[kind] : MAT.leaf);
 
-// 每局开始时按季节生成树木几何。GEO[kind] = [近处精细版（树干 / 枝叶面片 / 树冠内核 三组材质）, 远处简化版（单材质）]
+// 每局开始时按季节生成树木几何。GEO[kind] = [近处精细版（树干 / 枝叶面片 / 树冠内核 三组材质）, 远处简化版（单材质）, 中距离版（同样三组材质）]
 export function buildVegetation(seasonKey) {
   const sk = seasonKey;
   for (const k of ['fir', 'larch', 'birch', 'maple', 'maple2', 'bonsai', 'rhodo', 'shrub', 'dead']) if (GEO[k]) for (const g of GEO[k]) g.dispose();
   if (GEO.bloom) GEO.bloom.dispose();
   const fc = (kind, k = 1.2) => FOL[kind][sk] ? col3(FOL[kind][sk]).multiplyScalar(k) : null;
   const pack = (kind, bark, cards, cores, lo, conifer) => {
-    GEO[kind] = [merge(null, [bark, cards, cores.filter(Boolean)]), merge(lo)];
-    HI_MATS[kind] = [MAT.bark, conifer ? MAT.bough : MAT.spray, MAT.leaf];
+    const cs = cores.filter(Boolean), cm = conifer ? MAT.bough : MAT.spray;
+    const hi = weld(merge(null, [bark, cards, cs]));
+    // 中距离版（材质分组和精细版一样）：枝叶面片减半——层层叠叠的面片是最费的；阔叶树隔一片留一片，
+    // 针叶树的枝是“平 + 立”成对的，平的全留、立的隔一根留一根。树冠内核露得多了，提亮一点免得树冠发黑。
+    // 树干枝杈不多的照旧，枝杈太多的（落叶松）只留主干。没有叶子的树（枯树、冬天的落叶树）本来就省，直接用精细版
+    let mid = hi;
+    if (cards.length) {
+      const tris = (list) => list.reduce((n, g) => n + (g.index ? g.index.count : g.attributes.position.count) / 3, 0);
+      const mc = cs.map(g => { const c = g.clone(), a = c.attributes.color; for (let i = 0; i < a.array.length; i++) a.array[i] *= 1.3; return c; });
+      mid = weld(merge(null, [tris(bark) <= 300 ? bark : [lo[0]], cards.filter((_, i) => (conifer ? i % 4 !== 3 : i % 2 === 0)), mc]));
+      for (const c of mc) c.dispose();
+    }
+    GEO[kind] = [hi, weld(merge(lo)), mid];
+    HI_MATS[kind] = [MAT.bark, cm, MAT.leaf];
   };
 
   // 冷杉：一轮轮向外平伸、末端下垂的枝；中间一根深色的锥芯挡住透光
@@ -822,7 +838,7 @@ export function treeCollide(x, z, rad) {
 
 // ---------- 分块 ----------
 class Chunk {
-  constructor(cx, cz) { this.cx = cx; this.cz = cz; this.res = 0; this.mesh = null; this.objs = null; this.grass = null; this.rocks = []; this.trees = []; }
+  constructor(cx, cz) { this.cx = cx; this.cz = cz; this.res = 0; this.mesh = null; this.objs = null; this.grass = null; this.rocks = []; this.trees = []; this.treeSets = []; }
 }
 
 function buildTerrainGeo(cx, cz, res) {
@@ -885,14 +901,52 @@ function slopeNY(x, z) {
 }
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
-// 近处用精细模型，远处换成简化模型（只换引用，不重建实例）
+// 石头：近处的地块用精细模型，远处换成简化模型（只换引用，不重建实例）
 function setChunkLod(chunk, lod) {
   if (!chunk.objs || chunk.lod === lod) return;
   chunk.lod = lod;
   for (const o of chunk.objs.children) {
     const L = o.userData.lods; if (!L) continue;
     o.geometry = L[lod];
-    if (o.userData.tree) o.material = lod ? MAT.leaf : HI_MATS[o.userData.tree];
+  }
+}
+
+// ---------- 树：一块地里的一种树 = 一份实例数据 + 最多三个实例网格（精细 / 中等 / 简化）----------
+// 画阴影图时只画阴影相机照得到的那几棵（排在每个网格的最前面）
+function beforeShadow() { this.count = this.userData.cast; }
+function afterShadow() { this.count = this.userData.all; }
+function treeMesh(set, lod) {
+  const im = new THREE.InstancedMesh(lodGeo(set.kind, lod), lodMat(set.kind, lod), set.n);
+  im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(set.n * 3), 3);
+  im.userData.all = 0; im.userData.cast = 0; im.userData.treeLod = lod;
+  im.layers.enable(2);                                   // 第 2 层：会被画进中距离阴影图
+  im.receiveShadow = true; im.castShadow = false; im.count = 0; im.visible = false;
+  im.onBeforeShadow = beforeShadow; im.onAfterShadow = afterShadow;
+  return im;
+}
+// 按 set.lod / set.cast 把实例分发到三个网格里：每个网格里“会投影的”排前面，各自再由近到远（近的先画，挡住后面的就不用再算）
+function fillTreeSet(set, group) {
+  const { n, lod, cast, d2, order, mat, col } = set;
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => d2[a] - d2[b]);
+  for (let L = 0; L < 3; L++) {
+    let nc = 0, nr = 0;
+    for (let i = 0; i < n; i++) if (lod[i] === L) { if (cast[i]) nc++; else nr++; }
+    let im = set.meshes[L];
+    if (!nc && !nr) { if (im) { im.count = 0; im.visible = false; im.castShadow = false; im.userData.all = 0; im.userData.cast = 0; } continue; }
+    if (!im) { im = set.meshes[L] = treeMesh(set, L); group.add(im); }
+    const M = im.instanceMatrix.array, C = im.instanceColor.array;
+    let a = 0, b = nc;
+    for (let q = 0; q < n; q++) {
+      const i = order[q]; if (lod[i] !== L) continue;
+      const j = cast[i] ? a++ : b++;
+      for (let k = 0; k < 16; k++) M[j * 16 + k] = mat[i * 16 + k];
+      C[j * 3] = col[i * 3]; C[j * 3 + 1] = col[i * 3 + 1]; C[j * 3 + 2] = col[i * 3 + 2];
+    }
+    im.count = im.userData.all = nc + nr; im.userData.cast = nc;
+    im.visible = true; im.castShadow = nc > 0;
+    im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
+    im.computeBoundingSphere();
   }
 }
 
@@ -981,26 +1035,27 @@ function buildObjects(chunk) {
     group.add(im);
   });
   const bloomOn = WORLD.season === 'spring' ? 1 : WORLD.season === 'summer' ? 0.35 : 0;
-  const blooms = [];
+  const blooms = [], sets = [];
   for (const kind in trees) {
     const list = trees[kind];
     if (!list.length || !GEO[kind]) continue;
-    const im = new THREE.InstancedMesh(GEO[kind][lod], lod ? MAT.leaf : HI_MATS[kind], list.length);
-    im.userData.lods = GEO[kind]; im.userData.tree = kind; im.layers.enable(2);
+    const n = list.length;
+    const set = { kind, n, mat: new Float32Array(n * 16), col: new Float32Array(n * 3), pos: new Float32Array(n * 4), lod: new Uint8Array(n).fill(2), cast: new Uint8Array(n), d2: new Float32Array(n), order: new Uint16Array(n), meshes: [null, null, null], far: true, sx: 1e9, sz: 1e9 };
     list.forEach((t, k) => {
       _q.setFromEuler(_e.set(0, t.rot, 0));
       _s.set(t.s, t.s * (0.85 + (t.rot % 0.3)), t.s);
       _p.set(t.x, t.y, t.z);
       _m.compose(_p, _q, _s);
-      im.setMatrixAt(k, _m);
+      _m.toArray(set.mat, k * 16);
       const v = 0.85 + t.v * 0.3;
-      im.setColorAt(k, tmpC2.setRGB(v * (0.96 + t.v * 0.08), v, v * (1.04 - t.v * 0.08)));
+      set.col[k * 3] = v * (0.96 + t.v * 0.08); set.col[k * 3 + 1] = v; set.col[k * 3 + 2] = v * (1.04 - t.v * 0.08);
+      set.pos[k * 4] = t.x; set.pos[k * 4 + 1] = t.y; set.pos[k * 4 + 2] = t.z; set.pos[k * 4 + 3] = t.s;
       if (kind === 'rhodo' && t.v < bloomOn) blooms.push([_m.clone(), BLOOM_COLORS[(t.v * 97 | 0) % BLOOM_COLORS.length]]);
     });
-    im.castShadow = true; im.receiveShadow = true;
-    im.computeBoundingSphere();
-    group.add(im);
+    fillTreeSet(set, group);            // 先全部按简化版放上去；下一帧 updateTrees 再按距离分档
+    sets.push(set);
   }
+  chunk.treeSets = sets;
   if (blooms.length) {
     const im = new THREE.InstancedMesh(GEO.bloom, MAT.flower, blooms.length);
     blooms.forEach(([m, c], k) => { im.setMatrixAt(k, m); im.setColorAt(k, tmpC2.setRGB(c[0], c[1], c[2])); });
@@ -1090,6 +1145,9 @@ export class TerrainManager {
     this.chunks = new Map();
     this.queue = [];
     this.radius = 6;
+    this.treeDirty = false;     // 有新的树生成了，下一帧要重新分档
+    this.objVersion = 0;        // 树 / 石头每增减一次加一（中距离阴影图据此决定要不要重画）
+    this.treeLodR = null;       // [精细到多少米, 中等到多少米]；不设就用默认值（最高画质档会设得远一些）
   }
   key(cx, cz) { return cx + ',' + cz; }
   // fast：高速飞行，近处只要中等精度，而且不降已有的精度
@@ -1126,7 +1184,7 @@ export class TerrainManager {
       }
       if (c.dist > 3 && !c.objs && !c.farDone) { c.far = buildFarTrees(c); c.farDone = true; if (c.far) this.scene.add(c.far); continue; }
       if (fast) continue;
-      if (c.dist <= 3 && !c.objs) { c.objs = buildObjects(c); this.scene.add(c.objs); this.dropFar(c); if (!force) continue; }
+      if (c.dist <= 3 && !c.objs) { c.objs = buildObjects(c); this.scene.add(c.objs); this.dropFar(c); this.treeDirty = true; this.objVersion++; if (!force) continue; }
       if (c.dist <= 1 && !c.grassDone) { c.grass = buildGrass(c); c.grassDone = true; if (c.grass) this.scene.add(c.grass); }
     }
     // 卸载
@@ -1144,13 +1202,77 @@ export class TerrainManager {
     c.objs.traverse(o => { if (o.isInstancedMesh) o.dispose(); });
     for (const r of c.rocks) hashRemove(rockHash, r);
     for (const t of c.trees) hashRemove(treeHash, t);
-    c.objs = null; c.rocks = []; c.trees = [];
+    c.objs = null; c.rocks = []; c.trees = []; c.treeSets = []; this.objVersion++;
   }
-  // 画中距离阴影图时用：所有地块的树和石头临时换成简化模型（影子只要个大概轮廓），画完换回来
+  // 树按距离分档 + 挑出会投影的那些。人走出几米、太阳转了一度左右、或者有新地块生成时才重新分（平时什么都不做）。
+  // light：投影的平行光（阴影相机以 light.target 为中心、±shadowHalf 米见方）；没有阴影就传 null
+  updateTrees(px, py, pz, light, shadowHalf = 64, force = false) {
+    const st = this.treeSt || (this.treeSt = { x: 1e9, y: 0, z: 1e9, l: new THREE.Vector3(0, 1, 0), X: new THREE.Vector3(), Y: new THREE.Vector3(), L: new THREE.Vector3(), lite: null });
+    const L = st.L.set(0, 1, 0); let tx = px, ty = py, tz = pz, shadows = false;
+    if (light && light.castShadow && light.intensity > 0.004) { L.copy(light.position).sub(light.target.position).normalize(); tx = light.target.position.x; ty = light.target.position.y; tz = light.target.position.z; shadows = true; }
+    const moved = (px - st.x) ** 2 + (py - st.y) ** 2 + (pz - st.z) ** 2;
+    if (!force && !this.treeDirty && moved < 16 && st.l.dot(L) > 0.99985 && st.sh === shadows && st.lite === QUAL.lite) return;
+    this.treeDirty = false; st.x = px; st.y = py; st.z = pz; st.l.copy(L); st.sh = shadows; st.lite = QUAL.lite;
+    // 阴影相机的横轴 / 纵轴（和 three 的 lookAt 一致）
+    const X = st.X.set(0, 1, 0).cross(L); if (X.lengthSq() < 1e-6) X.set(1, 0, 0); X.normalize();
+    const Y = st.Y.copy(L).cross(X);
+    const [rHi, rMid] = this.treeLodR || TREE_LOD();
+    const hiIn = (rHi - 3) ** 2, hiOut = (rHi + 3) ** 2, midIn = (rMid - 4) ** 2, midOut = (rMid + 4) ** 2;
+    const SU = shadowHalf + 15, SW = shadowHalf + 15;      // 树冠半径 + 人还能再走几米、太阳还能再转一点的余量
+    for (const [, c] of this.chunks) {
+      if (!c.treeSets.length) continue;
+      // 整块地离得太远、也投不进阴影图：全部用简化版，不用逐棵算
+      const x0 = c.cx * CHUNK, z0 = c.cz * CHUNK;
+      const ddx = Math.max(x0 - px, 0, px - x0 - CHUNK), ddz = Math.max(z0 - pz, 0, pz - z0 - CHUNK);
+      let near = ddx * ddx + ddz * ddz < midOut;
+      if (!near && shadows) {
+        const vx = x0 + CHUNK / 2 - tx, vz = z0 + CHUNK / 2 - tz;        // 高度差先不管：沿光线方向的那一维本来就不裁
+        const uu = vx * X.x + vz * X.z, slack = CHUNK * 0.71 + 60;
+        near = Math.abs(uu) < SU + slack;
+      }
+      for (const set of c.treeSets) {
+        const { n, pos, lod, cast, d2 } = set;
+        if (!near) {
+          if (set.far) continue;
+          lod.fill(2); cast.fill(0); d2.fill(0); set.far = true; fillTreeSet(set, c.objs); continue;
+        }
+        let changed = set.far, any = false;
+        for (let i = 0; i < n; i++) {
+          const x = pos[i * 4], y = pos[i * 4 + 1], z = pos[i * 4 + 2], s = pos[i * 4 + 3];
+          const dx = x - px, dy = y + 3 - py, dz = z - pz, d = dx * dx + dy * dy + dz * dz;
+          d2[i] = d;
+          const cur = lod[i];
+          const nl = d < (cur === 0 ? hiOut : hiIn) ? 0 : d < (cur <= 1 ? midOut : midIn) ? 1 : 2;
+          let nc = 0;
+          if (shadows) {
+            const vx = x - tx, vy = y - ty, vz = z - tz;
+            const u = vx * X.x + vy * X.y + vz * X.z, w = vx * Y.x + vy * Y.y + vz * Y.z;
+            nc = Math.abs(u) < SU && w < SW && w > -SW - 9 * s * Y.y ? 1 : 0;       // 树有七八米高：树根在范围外、树梢也可能探进来
+          }
+          if (nl !== cur || nc !== cast[i]) { lod[i] = nl; cast[i] = nc; changed = true; }
+          if (nl < 2 || nc) any = true;
+        }
+        // 成员没变也隔一段路重排一次：让“由近到远”的顺序大致保持
+        if (changed || (any && (px - set.sx) ** 2 + (pz - set.sz) ** 2 > 400)) { fillTreeSet(set, c.objs); set.sx = px; set.sz = pz; }
+        set.far = !any;
+      }
+    }
+  }
+  // 画中距离阴影图时用：所有的树和石头临时换成简化模型（影子只要个大概轮廓），画完换回来
   withLowLod(fn) {
-    const saved = [];
-    for (const [, c] of this.chunks) if (c.objs && c.lod === 0) { saved.push(c); setChunkLod(c, 1); }
-    try { fn(); } finally { for (const c of saved) setChunkLod(c, 0); }
+    const saved = [], trees = [];
+    for (const [, c] of this.chunks) {
+      if (!c.objs) continue;
+      if (c.lod === 0) { saved.push(c); setChunkLod(c, 1); }
+      for (const set of c.treeSets) for (let L = 0; L < 2; L++) {
+        const im = set.meshes[L];
+        if (im && im.visible) { trees.push(im, im.geometry, im.material); im.geometry = lodGeo(set.kind, 2); im.material = MAT.leaf; }
+      }
+    }
+    try { fn(); } finally {
+      for (const c of saved) setChunkLod(c, 0);
+      for (let i = 0; i < trees.length; i += 3) { trees[i].geometry = trees[i + 1]; trees[i].material = trees[i + 2]; }
+    }
   }
   // 撤掉远景树（近处的完整树木已经生成，或者整块卸载）
   dropFar(c) { if (c.far) this.disposeGroup(c.far); c.far = null; c.farDone = false; }
